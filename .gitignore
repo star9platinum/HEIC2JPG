@@ -1,0 +1,32 @@
+# Local research, caches, and generated release artifacts
+/work/
+/outputs/
+/dist/
+/.vendor-cache/
+/vendor/
+
+# Third-party binaries and archives must not enter the source repository
+*.exe
+*.dll
+*.pdb
+*.7z
+*.zip
+
+# Photos and videos are intentionally excluded unless their licenses are reviewed
+*.heic
+*.heif
+*.jpg
+*.jpeg
+*.png
+*.mov
+*.mp4
+
+# Temporary and OS metadata
+*.log
+*.tmp
+*.bak
+*.dmp
+.DS_Store
+._*
+Thumbs.db
+desktop.ini

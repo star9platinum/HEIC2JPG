@@ -1,0 +1,17 @@
+name: Public tree check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject binaries, archives, and media
+        shell: powershell
+        run: .\scripts\check-public-tree.ps1

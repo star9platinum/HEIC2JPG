@@ -1,0 +1,32 @@
+Bundled runtime
+===============
+
+ImageMagick 7.1.2-29 portable Q16-HDRI x64
+
+Official release page:
+https://imagemagick.org/download/
+
+Official release asset:
+https://github.com/ImageMagick/ImageMagick/releases/download/7.1.2-29/ImageMagick-7.1.2-29-portable-Q16-HDRI-x64.7z
+
+SHA-256 of the official .7z asset:
+B68E312B21556AE8872704E37DF3C69CBDC0EA7100366BF823E7E3A1B69405BC
+
+This package includes magick.exe and the data/configuration files required by
+this converter. Redundant standalone ImageMagick command executables are not
+included because this script invokes the equivalent commands through
+magick.exe.
+
+The ImageMagick license and all notices shipped in the official portable
+archive are preserved in:
+
+ImageMagick\LICENSE.txt
+ImageMagick\NOTICE.txt
+
+Corresponding Windows source archive:
+https://github.com/ImageMagick/ImageMagick/releases/download/7.1.2-29/ImageMagick-7.1.2-29-Windows.7z
+
+This package is assembled locally and is not distributed by the HEIC2JPG
+source repository. ImageMagick and its bundled components retain their own
+licenses. Anyone who redistributes the assembled package is responsible for
+all applicable license, source/relinking, attribution, and patent obligations.
