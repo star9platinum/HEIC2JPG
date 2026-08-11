@@ -18,6 +18,7 @@ fi
 state_dir=''
 conversion_temp_dir=''
 conversion_temporary=''
+validation_temp_dir=''
 validation_temporary=''
 snapshot_stat=''
 snapshot_hash=''
@@ -58,11 +59,24 @@ discard_conversion_temp() {
   fi
 }
 
-cleanup() {
-  discard_conversion_temp
+discard_validation_temp() {
   if [ -n "$validation_temporary" ]; then
     rm -f "$validation_temporary" 2>/dev/null || true
+    validation_temporary=''
   fi
+  if [ -n "$validation_temp_dir" ]; then
+    case "${validation_temp_dir##*/}" in
+      .HEIC2JPG.validate.*)
+        rm -rf "$validation_temp_dir" 2>/dev/null || true
+        ;;
+    esac
+    validation_temp_dir=''
+  fi
+}
+
+cleanup() {
+  discard_validation_temp
+  discard_conversion_temp
 
   if [ -n "$state_dir" ] && [ -d "$state_dir" ]; then
     case "$state_dir" in
@@ -208,6 +222,7 @@ validate_jpeg() {
   local info
   local width
   local height
+  local jpeg_dir
   local inspect_log="$state_dir/sips-inspect.log"
   local decode_log="$state_dir/sips-validation.log"
   local command_status
@@ -253,8 +268,18 @@ validate_jpeg() {
     return 1
   fi
 
-  validation_temporary="$state_dir/validation.jpg"
-  rm -f "$validation_temporary" 2>/dev/null || true
+  discard_validation_temp
+  case "$jpeg_path" in
+    */*) jpeg_dir=${jpeg_path%/*} ;;
+    *) jpeg_dir=. ;;
+  esac
+  if ! validation_temp_dir=$(mktemp -d "$jpeg_dir/.HEIC2JPG.validate.XXXXXX"); then
+    printf 'Validation detail: could not create a validation folder beside the JPG: %s\n' \
+      "$jpeg_path" >&2
+    validation_temp_dir=''
+    return 1
+  fi
+  validation_temporary="$validation_temp_dir/validation.jpg"
   : > "$decode_log"
   sips -s format jpeg "$jpeg_path" --out "$validation_temporary" > "$decode_log" 2>&1
   command_status=$?
@@ -262,19 +287,16 @@ validate_jpeg() {
     printf 'Validation detail: sips could not fully decode the generated JPG (exit %d).\n' \
       "$command_status" >&2
     print_diagnostic_log 'sips validation output' "$decode_log"
-    rm -f "$validation_temporary" 2>/dev/null || true
-    validation_temporary=''
+    discard_validation_temp
     return 1
   fi
   if [ ! -s "$validation_temporary" ]; then
     printf 'Validation detail: full JPEG decode produced an empty file.\n' >&2
-    rm -f "$validation_temporary" 2>/dev/null || true
-    validation_temporary=''
+    discard_validation_temp
     return 1
   fi
 
-  rm -f "$validation_temporary" 2>/dev/null || true
-  validation_temporary=''
+  discard_validation_temp
   return 0
 }
 

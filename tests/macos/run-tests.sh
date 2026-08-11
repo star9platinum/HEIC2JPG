@@ -46,6 +46,10 @@ assert_log_contains() {
   if grep -Fq "$1" "$output_log"; then pass "$2"; else fail "$2"; fi
 }
 
+assert_call_log_contains() {
+  if grep -Fq "$1" "$call_log"; then pass "$2"; else fail "$2"; fi
+}
+
 assert_no_photo_temp() {
   found_temp=$(find "$1" -name '.HEIC2JPG.*' -print -quit)
   if [ -z "$found_temp" ]; then pass "$2"; else fail "$2 ($found_temp)"; fi
@@ -76,6 +80,7 @@ run_core() {
     PATH="$mockbin:$real_path" \
     HEIC2JPG_TEST_MODE=1 \
     HEIC2JPG_TEST_CALL_LOG="$call_log" \
+    HEIC2JPG_TEST_PHOTO_ROOT="$target" \
     HEIC2JPG_TEST_OPEN_ACTION="$action" \
     HEIC2JPG_SIPS_FAIL_MATCH="$fail_match" \
     HEIC2JPG_SIPS_INVALID_MATCH="$invalid_match" \
@@ -94,6 +99,7 @@ assert_missing "$case_root/photos/first.HEIC" 'first HEIC deleted after confirma
 assert_missing "$case_root/photos/sub folder/第二张.heic" 'nested HEIC deleted after confirmation'
 assert_exists "$case_root/photos/first.jpg" 'first JPG created'
 assert_exists "$case_root/photos/sub folder/第二张.jpg" 'nested JPG created'
+assert_call_log_contains 'validation-location-ok' 'validation JPGs stay on the photo volume one at a time'
 assert_no_photo_temp "$case_root/photos" 'success leaves no photo temporary files'
 
 new_case 'hidden HEIC files are skipped'

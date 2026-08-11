@@ -39,6 +39,27 @@ if [ "$inspect" -eq 1 ]; then
   exit 0
 fi
 
+if [ -n "${HEIC2JPG_TEST_CALL_LOG:-}" ] && [ -n "$output" ]; then
+  printf 'sips-output:%s\n' "$output" >> "$HEIC2JPG_TEST_CALL_LOG"
+fi
+
+case "$output" in
+  *validation.jpg)
+    if [ -n "${HEIC2JPG_TEST_PHOTO_ROOT:-}" ]; then
+      validation_dir_count=$(find "$HEIC2JPG_TEST_PHOTO_ROOT" -type d \
+        -name '.HEIC2JPG.validate.*' | wc -l | tr -d ' ')
+      if [ "$validation_dir_count" -ne 1 ]; then
+        printf 'Error: expected exactly one validation directory, found %s.\n' \
+          "$validation_dir_count" >&2
+        exit 4
+      fi
+      if [ -n "${HEIC2JPG_TEST_CALL_LOG:-}" ]; then
+        printf 'validation-location-ok\n' >> "$HEIC2JPG_TEST_CALL_LOG"
+      fi
+    fi
+    ;;
+esac
+
 if [ -z "$input" ] || [ -z "$output" ] || [ ! -f "$input" ]; then
   exit 2
 fi
