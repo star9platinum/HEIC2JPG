@@ -38,8 +38,8 @@ Options:
 
 If no directory is specified, a multi-select macOS folder picker is shown.
 All subfolders are included. HEIC originals are kept during conversion and
-manual review. They are deleted only after y or Y is entered and every final
-safety check passes.
+manual review. Only originals with verified JPG files are deleted, and only
+after y or Y is entered and every final safety check passes.
 EOF
 }
 
@@ -297,6 +297,29 @@ load_record() {
   return 0
 }
 
+save_safety_record() {
+  local source_path=$1
+  local output_path=$2
+  local source_stat_value=$3
+  local source_hash_value=$4
+  local output_hash_value=$5
+  local source_key
+
+  source_key=$(path_key "$source_path")
+  if [ -z "$output_hash_value" ] || [ -z "$source_key" ] || \
+      [ -e "$records_dir/$source_key" ]; then
+    return 1
+  fi
+
+  if ! printf '%s\0%s\0%s\0%s\0%s\0' \
+      "$source_path" "$output_path" "$source_stat_value" \
+      "$source_hash_value" "$output_hash_value" > "$records_dir/$source_key"; then
+    rm -f "$records_dir/$source_key" 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
 read_confirmation() {
   if [ "${HEIC2JPG_TEST_MODE:-0}" = '1' ]; then
     IFS= read -r confirmation
@@ -517,12 +540,11 @@ while IFS= read -r -d '' input; do
   fi
 
   if [ -e "$output" ] || [ -L "$output" ]; then
-    if [ "$overwrite" -eq 0 ]; then
-      printf 'Preflight conflict: JPG already exists: %s\n' "$output" >&2
-      preflight_errors=$((preflight_errors + 1))
-    elif [ -L "$output" ] || [ ! -f "$output" ]; then
+    if [ -L "$output" ] || [ ! -f "$output" ]; then
       printf 'Preflight failed: existing JPG target is not a regular file: %s\n' "$output" >&2
       preflight_errors=$((preflight_errors + 1))
+    elif [ "$overwrite" -eq 0 ]; then
+      printf 'Resume candidate: existing JPG will be validated: %s\n' "$output"
     fi
   fi
 done < "$initial_scan"
@@ -534,13 +556,11 @@ fi
 if [ "$preflight_errors" -gt 0 ]; then
   printf 'SAFETY STOP: %d preflight checks failed. No files were converted or deleted.\n' \
     "$preflight_errors" >&2
-  if [ "$overwrite" -eq 0 ]; then
-    printf 'Use -f only if you intentionally want to replace existing regular JPG files.\n' >&2
-  fi
   exit 1
 fi
 
 converted=0
+reused=0
 failed=0
 
 while IFS= read -r -d '' input; do
@@ -554,6 +574,65 @@ while IFS= read -r -d '' input; do
   fi
   source_stat=$snapshot_stat
   source_hash=$snapshot_hash
+
+  if { [ -e "$output" ] || [ -L "$output" ]; } && [ "$overwrite" -eq 0 ]; then
+    if [ -L "$output" ] || [ ! -f "$output" ]; then
+      printf 'SKIPPED, original kept: existing JPG is no longer a regular file: %s\n' \
+        "$output" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+
+    source_mtime=$(stat -f '%m' "$input" 2>/dev/null)
+    output_mtime=$(stat -f '%m' "$output" 2>/dev/null)
+    if [ -z "$source_mtime" ] || [ "$source_mtime" != "$output_mtime" ]; then
+      printf 'SKIPPED, original kept: existing JPG timestamp does not match the HEIC: %s\n' \
+        "$output" >&2
+      printf 'Use -f to regenerate and replace this JPG if that is intentional.\n' >&2
+      failed=$((failed + 1))
+      continue
+    fi
+
+    if ! snapshot_file "$output"; then
+      printf 'SKIPPED, original kept: existing JPG was not stable: %s\n' "$output" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    existing_output_stat=$snapshot_stat
+    existing_output_hash=$snapshot_hash
+
+    printf 'Validate existing JPG: %s -> %s\n' "$input" "$output"
+    if ! validate_jpeg "$output"; then
+      printf 'SKIPPED, original kept: existing JPG validation failed: %s\n' "$output" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    if ! snapshot_file "$output" || [ "$snapshot_stat" != "$existing_output_stat" ] || \
+        [ "$snapshot_hash" != "$existing_output_hash" ]; then
+      printf 'SKIPPED, original kept: existing JPG changed during validation: %s\n' \
+        "$output" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    if ! snapshot_file "$input" || [ "$snapshot_stat" != "$source_stat" ] || \
+        [ "$snapshot_hash" != "$source_hash" ]; then
+      printf 'SKIPPED, original kept: source HEIC changed while validating its JPG: %s\n' \
+        "$input" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    if ! save_safety_record "$input" "$output" "$source_stat" "$source_hash" \
+        "$existing_output_hash"; then
+      printf 'SKIPPED, original kept: could not record the existing JPG safely: %s\n' \
+        "$output" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+
+    printf 'Resume ready: existing JPG passed validation; review it before deletion.\n'
+    reused=$((reused + 1))
+    continue
+  fi
 
   if ! conversion_temp_dir=$(mktemp -d "$output_dir/.HEIC2JPG.XXXXXX"); then
     printf 'FAILED, original kept: could not create a temporary folder beside %s\n' "$input" >&2
@@ -622,18 +701,9 @@ while IFS= read -r -d '' input; do
   conversion_temp_dir=''
 
   output_hash=$(sha256_file "$output")
-  source_key=$(path_key "$input")
-  if [ -z "$output_hash" ] || [ -z "$source_key" ] || [ -e "$records_dir/$source_key" ]; then
-    printf 'FAILED, original kept: could not record the safety snapshot.\n' >&2
-    failed=$((failed + 1))
-    continue
-  fi
-
-  if ! printf '%s\0%s\0%s\0%s\0%s\0' \
-      "$input" "$output" "$source_stat" "$source_hash" "$output_hash" \
-      > "$records_dir/$source_key"; then
+  if ! save_safety_record "$input" "$output" "$source_stat" "$source_hash" \
+      "$output_hash"; then
     printf 'FAILED, original kept: could not save the safety snapshot.\n' >&2
-    rm -f "$records_dir/$source_key" 2>/dev/null || true
     failed=$((failed + 1))
     continue
   fi
@@ -641,13 +711,18 @@ while IFS= read -r -d '' input; do
   converted=$((converted + 1))
 done < "$initial_scan"
 
-printf '\nConversion finished: %d eligible, %d converted and validated, %d errors, %d hidden skipped.\n' \
-  "$found" "$converted" "$failed" "$skipped_hidden"
+ready=$((converted + reused))
+printf '\nConversion finished: %d eligible, %d newly converted, %d existing JPG resumed, %d skipped with issues, %d hidden skipped.\n' \
+  "$found" "$converted" "$reused" "$failed" "$skipped_hidden"
 printf 'No HEIC originals have been deleted.\n'
 
-if [ "$failed" -gt 0 ] || [ "$converted" -ne "$found" ]; then
-  printf 'SAFETY STOP: Not every HEIC file was converted. All HEIC originals were kept.\n' >&2
+if [ "$ready" -eq 0 ]; then
+  printf 'No HEIC files are ready for deletion. Files with errors were kept.\n' >&2
   exit 1
+fi
+if [ "$failed" -gt 0 ]; then
+  printf 'Continuing with %d verified file(s). %d HEIC file(s) with issues will be kept.\n' \
+    "$ready" "$failed"
 fi
 
 printf '\nOpening the selected folders in Finder.\n'
@@ -665,7 +740,9 @@ if [ "$finder_errors" -gt 0 ]; then
   exit 1
 fi
 
-printf '\nIf every JPG looks correct, delete all converted HEIC originals? [y/N]: '
+printf '\n%d verified HEIC original(s) are ready for deletion; %d issue file(s) will be kept.\n' \
+  "$ready" "$failed"
+printf 'If every ready JPG looks correct, delete those verified HEIC originals? [y/N]: '
 confirmation=''
 if ! read_confirmation; then
   printf '\nDeletion cancelled. An interactive confirmation was not received.\n'
@@ -692,14 +769,14 @@ else
   while IFS= read -r -d '' current_heic; do
     current_count=$((current_count + 1))
     current_key=$(path_key "$current_heic")
-    if [ -z "$current_key" ] || [ ! -f "$records_dir/$current_key" ]; then
+    if [ -z "$current_key" ] || [ ! -f "$initial_seen_dir/$current_key" ]; then
       printf 'Safety check failed: unexpected HEIC file: %s\n' "$current_heic" >&2
       predelete_errors=$((predelete_errors + 1))
     fi
   done < "$final_scan"
 fi
 
-if [ "$current_count" -ne "$converted" ]; then
+if [ "$current_count" -ne "$found" ]; then
   printf 'Safety check failed: the HEIC file set changed during manual review.\n' >&2
   predelete_errors=$((predelete_errors + 1))
 fi
@@ -764,8 +841,8 @@ for record_path in "$records_dir"/*; do
   fi
 done
 
-printf '\nDone: %d JPG files verified, %d HEIC originals deleted, %d deletion errors.\n' \
-  "$converted" "$deleted" "$delete_errors"
+printf '\nDone: %d JPG files verified, %d HEIC originals deleted, %d issue originals kept, %d deletion errors.\n' \
+  "$ready" "$deleted" "$failed" "$delete_errors"
 
 if [ "$delete_errors" -gt 0 ]; then
   exit 1

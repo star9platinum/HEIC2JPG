@@ -125,10 +125,12 @@ mkdir -p "$case_root/photos"
 printf 'good\n' > "$case_root/photos/good.HEIC"
 printf 'bad\n' > "$case_root/photos/fail.HEIC"
 run_core 'y' "$case_root/photos" none fail.HEIC __never_match__ __never_match__ -f
-assert_nonzero_status 'one conversion failure fails the batch'
-assert_exists "$case_root/photos/good.HEIC" 'batch failure keeps successful source HEIC'
-assert_exists "$case_root/photos/fail.HEIC" 'batch failure keeps failed source HEIC'
-if grep -q '^open$' "$call_log"; then fail 'batch failure must not open review/delete phase'; else pass 'batch failure blocks review/delete phase'; fi
+assert_status 0 'one corrupt HEIC does not stop the remaining batch'
+assert_missing "$case_root/photos/good.HEIC" 'confirmed successful source is deleted'
+assert_exists "$case_root/photos/good.jpg" 'good HEIC is converted despite another failure'
+assert_exists "$case_root/photos/fail.HEIC" 'corrupt HEIC is kept'
+assert_missing "$case_root/photos/fail.jpg" 'corrupt HEIC produces no published JPG'
+if grep -q '^open$' "$call_log"; then pass 'partial success reaches review phase'; else fail 'partial success reaches review phase'; fi
 assert_log_contains 'sips could not convert' 'conversion failure reports a specific conversion error'
 assert_log_contains '(exit 1)' 'conversion failure reports sips exit status'
 assert_log_contains 'mock decoder rejected the input' 'conversion failure preserves original sips diagnostic'
@@ -176,17 +178,48 @@ run_core 'y' "$case_root/photos" add_non_heic __never_match__ __never_match__ __
 assert_status 0 'unrelated non-HEIC file does not cause false safety stop'
 assert_missing "$case_root/photos/review.HEIC" 'control case deletes confirmed HEIC'
 
-new_case 'existing target preflight'
+new_case 'resume matching existing target'
 mkdir -p "$case_root/photos"
 printf 'source\n' > "$case_root/photos/existing.HEIC"
-printf 'original jpg\n' > "$case_root/photos/existing.jpg"
+printf 'MOCK_JPEG\nexisting output\n' > "$case_root/photos/existing.jpg"
+touch -r "$case_root/photos/existing.HEIC" "$case_root/photos/existing.jpg"
 old_jpg_hash=$(hash_file "$case_root/photos/existing.jpg")
 run_core 'y' "$case_root/photos" none __never_match__ __never_match__ __never_match__
-assert_nonzero_status 'existing JPG without -f stops before conversion'
-assert_exists "$case_root/photos/existing.HEIC" 'preflight conflict keeps HEIC'
+assert_status 0 'matching valid existing JPG resumes safely without -f'
+assert_missing "$case_root/photos/existing.HEIC" 'resumed HEIC is deleted after review confirmation'
 new_jpg_hash=$(hash_file "$case_root/photos/existing.jpg")
-if [ "$old_jpg_hash" = "$new_jpg_hash" ]; then pass 'preflight conflict preserves existing JPG'; else fail 'preflight conflict preserves existing JPG'; fi
-if grep -q '^sips$' "$call_log"; then fail 'preflight conflict must not call sips'; else pass 'preflight conflict performs zero conversions'; fi
+if [ "$old_jpg_hash" = "$new_jpg_hash" ]; then pass 'resume preserves existing JPG bytes'; else fail 'resume preserves existing JPG bytes'; fi
+assert_log_contains 'Resume ready: existing JPG passed validation' 'resume decision is reported'
+
+new_case 'invalid existing target is skipped'
+mkdir -p "$case_root/photos"
+printf 'unverified source\n' > "$case_root/photos/unverified.HEIC"
+printf 'NOT_A_JPEG\n' > "$case_root/photos/unverified.jpg"
+touch -r "$case_root/photos/unverified.HEIC" "$case_root/photos/unverified.jpg"
+printf 'good\n' > "$case_root/photos/good.HEIC"
+old_jpg_hash=$(hash_file "$case_root/photos/unverified.jpg")
+run_core 'Y' "$case_root/photos" none __never_match__ __never_match__ __never_match__
+assert_status 0 'invalid existing JPG does not stop other conversions'
+assert_exists "$case_root/photos/unverified.HEIC" 'HEIC with invalid existing JPG is kept'
+new_jpg_hash=$(hash_file "$case_root/photos/unverified.jpg")
+if [ "$old_jpg_hash" = "$new_jpg_hash" ]; then pass 'invalid existing JPG is preserved'; else fail 'invalid existing JPG is preserved'; fi
+assert_missing "$case_root/photos/good.HEIC" 'other successful HEIC is deleted after confirmation'
+assert_exists "$case_root/photos/good.jpg" 'other HEIC converts despite invalid existing JPG'
+assert_log_contains 'existing JPG validation failed' 'invalid existing JPG reason is reported'
+
+new_case 'mismatched existing target is skipped'
+mkdir -p "$case_root/photos"
+printf 'source\n' > "$case_root/photos/mismatch.HEIC"
+printf 'MOCK_JPEG\nunrelated output\n' > "$case_root/photos/mismatch.jpg"
+touch -t 202001010101 "$case_root/photos/mismatch.HEIC"
+touch -t 202101010101 "$case_root/photos/mismatch.jpg"
+printf 'good\n' > "$case_root/photos/good.HEIC"
+run_core 'y' "$case_root/photos" none __never_match__ __never_match__ __never_match__
+assert_status 0 'timestamp-mismatched JPG does not stop other conversions'
+assert_exists "$case_root/photos/mismatch.HEIC" 'HEIC with unverified existing JPG is kept'
+assert_exists "$case_root/photos/mismatch.jpg" 'timestamp-mismatched JPG is preserved'
+assert_missing "$case_root/photos/good.HEIC" 'verified file still completes in mismatch batch'
+assert_log_contains 'timestamp does not match the HEIC' 'timestamp mismatch reason is reported'
 
 new_case 'folder picker'
 mkdir -p "$case_root/photos"
@@ -242,7 +275,7 @@ assert_missing "$case_root/photos/sub folder/nested.HEIC" 'overlapping folder so
 assert_exists "$case_root/photos/sub folder/nested.jpg" 'overlapping folder source is converted once'
 assert_missing "$case_root/other photos/other.HEIC" 'additional command-line folder source is deleted'
 assert_exists "$case_root/other photos/other.jpg" 'additional command-line folder is converted'
-assert_log_contains '2 eligible, 2 converted and validated' 'overlapping selections are deduplicated'
+assert_log_contains '2 eligible, 2 newly converted' 'overlapping selections are deduplicated'
 
 new_case 'folder picker cancel'
 printf 'unused\n' | env \
