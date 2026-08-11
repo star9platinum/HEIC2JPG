@@ -34,5 +34,23 @@ jobs:
             }
           test -s "$work/output.jpg"
           /usr/bin/sips -g format "$work/output.jpg" | grep -Eiq 'format:[[:space:]]*jpeg'
+      - name: Validate multi-folder AppleScript syntax
+        run: |
+          set -eu
+          work=$(mktemp -d "${TMPDIR:-/tmp}/HEIC2JPG-picker.XXXXXX")
+          trap 'rm -rf "$work"' EXIT
+          /usr/bin/osacompile -o "$work/folder-picker.scpt" <<'APPLESCRIPT'
+          use scripting additions
+          try
+            set selectedFolders to choose folder with prompt "选择一个或多个包含 HEIC 照片的根文件夹" with multiple selections allowed
+            set outputLines to ""
+            repeat with selectedFolder in selectedFolders
+              set outputLines to outputLines & (POSIX path of selectedFolder) & linefeed
+            end repeat
+            return outputLines
+          on error number -128
+            return ""
+          end try
+          APPLESCRIPT
       - name: Test folder selection and deletion safety flow
         run: bash tests/macos/run-tests.sh

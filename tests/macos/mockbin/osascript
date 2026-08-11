@@ -13,4 +13,8 @@ if [ "${HEIC2JPG_PICKER_CANCEL:-0}" = '1' ]; then
   exit 0
 fi
 
-printf '%s\n' "${HEIC2JPG_PICKER_PATH:-}"
+if [ -n "${HEIC2JPG_PICKER_PATHS:-}" ]; then
+  printf '%s\n' "$HEIC2JPG_PICKER_PATHS"
+else
+  printf '%s\n' "${HEIC2JPG_PICKER_PATH:-}"
+fi

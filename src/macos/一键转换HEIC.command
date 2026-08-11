@@ -29,17 +29,17 @@ record_output_hash=''
 
 usage() {
   cat <<'EOF'
-Usage: 一键转换HEIC.command [-f] [-q quality] [directory]
+Usage: 一键转换HEIC.command [-f] [-q quality] [directory ...]
 
 Options:
   -f          Replace existing regular same-name JPG files
   -q quality  JPEG quality from 1 to 100 (default: 90)
   -h          Show this help
 
-If directory is omitted, a macOS folder picker is shown.
+If no directory is specified, a multi-select macOS folder picker is shown.
 All subfolders are included. HEIC originals are kept during conversion and
-manual review. They are deleted only after the exact confirmation phrase
-DELETE ALL HEIC is entered and every final safety check passes.
+manual review. They are deleted only after y or Y is entered and every final
+safety check passes.
 EOF
 }
 
@@ -104,7 +104,7 @@ print_diagnostic_log() {
   done < "$log_path"
 }
 
-select_photo_folder() {
+select_photo_folders() {
   if ! command -v osascript >/dev/null 2>&1; then
     printf 'Error: osascript was not found. Specify a directory on the command line.\n' >&2
     return 1
@@ -112,8 +112,12 @@ select_photo_folder() {
 
   osascript <<'APPLESCRIPT'
 try
-  set selectedFolder to choose folder with prompt "选择包含 HEIC 照片的根文件夹"
-  return POSIX path of selectedFolder
+  set selectedFolders to choose folder with prompt "选择一个或多个包含 HEIC 照片的根文件夹" with multiple selections allowed
+  set outputLines to ""
+  repeat with selectedFolder in selectedFolders
+    set outputLines to outputLines & (POSIX path of selectedFolder) & linefeed
+  end repeat
+  return outputLines
 on error number -128
   return ""
 end try
@@ -129,6 +133,52 @@ sha256_file() {
 
 path_key() {
   printf '%s' "$1" | shasum -a 256 2>/dev/null | awk '{print $1}'
+}
+
+scan_selected_roots() {
+  local scan_mode=$1
+  local destination=$2
+  local seen_dir=$3
+  local scan_buffer="$state_dir/scan-buffer"
+  local scan_root
+  local discovered_path
+  local discovered_key
+
+  if ! mkdir "$seen_dir" || ! : > "$destination"; then
+    return 1
+  fi
+
+  while IFS= read -r -d '' scan_root; do
+    case "$scan_mode" in
+      eligible)
+        find "$scan_root" -type f -name '*.[Hh][Ee][Ii][Cc]' ! -name '.*' \
+          -print0 > "$scan_buffer" || return 1
+        ;;
+      hidden)
+        find "$scan_root" -type f -name '*.[Hh][Ee][Ii][Cc]' -name '.*' \
+          -print0 > "$scan_buffer" || return 1
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+
+    while IFS= read -r -d '' discovered_path; do
+      discovered_key=$(path_key "$discovered_path")
+      if [ -z "$discovered_key" ]; then
+        return 1
+      fi
+      if [ ! -e "$seen_dir/$discovered_key" ]; then
+        if ! : > "$seen_dir/$discovered_key" || \
+            ! printf '%s\0' "$discovered_path" >> "$destination"; then
+          return 1
+        fi
+      fi
+    done < "$scan_buffer"
+  done < "$roots_file"
+
+  rm -f "$scan_buffer" 2>/dev/null || true
+  return 0
 }
 
 snapshot_file() {
@@ -285,12 +335,6 @@ while getopts ':fq:h' option; do
 done
 shift $((OPTIND - 1))
 
-if [ "$#" -gt 1 ]; then
-  printf 'Error: only one directory may be specified.\n' >&2
-  usage >&2
-  exit 2
-fi
-
 case "$quality" in
   ''|*[!0-9]*)
     printf 'Error: quality must be an integer from 1 to 100.\n' >&2
@@ -302,34 +346,68 @@ if [ "$quality" -lt 1 ] || [ "$quality" -gt 100 ]; then
   exit 2
 fi
 
-if [ "$#" -eq 1 ]; then
-  root=$1
+requested_roots=()
+requested_count=0
+if [ "$#" -gt 0 ]; then
+  for requested_root in "$@"; do
+    requested_roots[$requested_count]=$requested_root
+    requested_count=$((requested_count + 1))
+  done
 else
-  printf 'Choose the photo folder in the macOS dialog...\n'
-  if ! root=$(select_photo_folder); then
+  printf 'Choose one or more photo folders in the macOS dialog...\n'
+  if ! picker_output=$(select_photo_folders); then
     exit 1
   fi
-  if [ -z "$root" ]; then
+  while IFS= read -r requested_root; do
+    if [ -n "$requested_root" ]; then
+      requested_roots[$requested_count]=$requested_root
+      requested_count=$((requested_count + 1))
+    fi
+  done <<EOF
+$picker_output
+EOF
+  if [ "$requested_count" -eq 0 ]; then
     printf 'Cancelled. No photos were changed.\n'
     exit 0
   fi
 fi
 
-case "$root" in
-  *$'\n'*|*$'\r'*)
-    printf 'Error: the selected root path contains a line break, which is not supported.\n' >&2
-    exit 2
-    ;;
-esac
+normalized_roots=()
+normalized_count=0
+requested_index=0
+while [ "$requested_index" -lt "$requested_count" ]; do
+  requested_root=${requested_roots[$requested_index]}
+  case "$requested_root" in
+    *$'\n'*|*$'\r'*)
+      printf 'Error: a selected root path contains a line break, which is not supported.\n' >&2
+      exit 2
+      ;;
+  esac
 
-if [ ! -d "$root" ]; then
-  printf 'Error: directory does not exist: %s\n' "$root" >&2
-  exit 2
-fi
-if ! root=$(cd "$root" 2>/dev/null && pwd -P); then
-  printf 'Error: directory could not be opened: %s\n' "$root" >&2
-  exit 2
-fi
+  if [ ! -d "$requested_root" ]; then
+    printf 'Error: directory does not exist: %s\n' "$requested_root" >&2
+    exit 2
+  fi
+  if ! normalized_root=$(cd "$requested_root" 2>/dev/null && pwd -P); then
+    printf 'Error: directory could not be opened: %s\n' "$requested_root" >&2
+    exit 2
+  fi
+
+  duplicate_root=0
+  normalized_index=0
+  while [ "$normalized_index" -lt "$normalized_count" ]; do
+    if [ "${normalized_roots[$normalized_index]}" = "$normalized_root" ]; then
+      duplicate_root=1
+      break
+    fi
+    normalized_index=$((normalized_index + 1))
+  done
+  if [ "$duplicate_root" -eq 0 ]; then
+    normalized_roots[$normalized_count]=$normalized_root
+    normalized_count=$((normalized_count + 1))
+  fi
+  requested_index=$((requested_index + 1))
+done
 
 for required_command in sips shasum stat find awk grep open mktemp; do
   if ! command -v "$required_command" >/dev/null 2>&1; then
@@ -345,16 +423,37 @@ fi
 
 records_dir="$state_dir/records"
 planned_outputs_dir="$state_dir/planned-outputs"
+roots_file="$state_dir/selected-roots"
 initial_scan="$state_dir/initial-heic-list"
 final_scan="$state_dir/final-heic-list"
 skipped_hidden_scan="$state_dir/skipped-hidden-heic-list"
+initial_seen_dir="$state_dir/initial-seen"
+hidden_seen_dir="$state_dir/hidden-seen"
+final_seen_dir="$state_dir/final-seen"
 if ! mkdir "$records_dir" "$planned_outputs_dir"; then
   printf 'Error: could not initialize the safety workspace.\n' >&2
   exit 1
 fi
+if ! : > "$roots_file"; then
+  printf 'Error: could not save the selected folder list.\n' >&2
+  exit 1
+fi
+normalized_index=0
+while [ "$normalized_index" -lt "$normalized_count" ]; do
+  if ! printf '%s\0' "${normalized_roots[$normalized_index]}" >> "$roots_file"; then
+    printf 'Error: could not save a selected folder.\n' >&2
+    exit 1
+  fi
+  normalized_index=$((normalized_index + 1))
+done
 
 printf '\nHEIC -> JPG for macOS\n'
-printf 'Folder: %s\n' "$root"
+printf 'Selected folders (%d):\n' "$normalized_count"
+normalized_index=0
+while [ "$normalized_index" -lt "$normalized_count" ]; do
+  printf '  %s\n' "${normalized_roots[$normalized_index]}"
+  normalized_index=$((normalized_index + 1))
+done
 if command -v sw_vers >/dev/null 2>&1; then
   printf 'macOS: %s\n' "$(sw_vers -productVersion 2>/dev/null)"
 fi
@@ -362,13 +461,11 @@ printf 'Image converter: %s\n' "$(command -v sips)"
 printf 'Subfolders are included.\n'
 printf 'All HEIC originals stay in place during conversion and manual review.\n\n'
 
-if ! find "$root" -type f -name '*.[Hh][Ee][Ii][Cc]' ! -name '.*' \
-    -print0 > "$initial_scan"; then
-  printf 'SAFETY STOP: The folder scan was incomplete. No files were changed.\n' >&2
+if ! scan_selected_roots eligible "$initial_scan" "$initial_seen_dir"; then
+  printf 'SAFETY STOP: One or more folder scans were incomplete. No files were changed.\n' >&2
   exit 1
 fi
-if ! find "$root" -type f -name '*.[Hh][Ee][Ii][Cc]' -name '.*' \
-    -print0 > "$skipped_hidden_scan"; then
+if ! scan_selected_roots hidden "$skipped_hidden_scan" "$hidden_seen_dir"; then
   printf 'SAFETY STOP: The hidden-file scan was incomplete. No files were changed.\n' >&2
   exit 1
 fi
@@ -553,34 +650,43 @@ if [ "$failed" -gt 0 ] || [ "$converted" -ne "$found" ]; then
   exit 1
 fi
 
-printf '\nOpening the selected folder in Finder.\n'
+printf '\nOpening the selected folders in Finder.\n'
 printf 'Manually inspect the JPG files before returning to this window.\n'
-if ! open "$root"; then
-  printf 'SAFETY STOP: Finder could not be opened. No HEIC files were deleted.\n' >&2
+finder_errors=0
+while IFS= read -r -d '' selected_root; do
+  if ! open "$selected_root"; then
+    printf 'Finder could not open: %s\n' "$selected_root" >&2
+    finder_errors=$((finder_errors + 1))
+  fi
+done < "$roots_file"
+if [ "$finder_errors" -gt 0 ]; then
+  printf 'SAFETY STOP: %d selected folder(s) could not be opened. No HEIC files were deleted.\n' \
+    "$finder_errors" >&2
   exit 1
 fi
 
-printf '\nIf every JPG looks correct, type this exact phrase:\n'
-printf 'DELETE ALL HEIC\n'
-printf 'Confirmation: '
+printf '\nIf every JPG looks correct, delete all converted HEIC originals? [y/N]: '
 confirmation=''
 if ! read_confirmation; then
   printf '\nDeletion cancelled. An interactive confirmation was not received.\n'
   printf 'All HEIC originals were kept.\n'
   exit 0
 fi
-if [ "$confirmation" != 'DELETE ALL HEIC' ]; then
-  printf 'Deletion cancelled. All HEIC originals were kept.\n'
-  exit 0
-fi
+case "$confirmation" in
+  y|Y)
+    ;;
+  *)
+    printf 'Deletion cancelled. All HEIC originals were kept.\n'
+    exit 0
+    ;;
+esac
 
 printf '\nRunning final safety checks before deleting any HEIC files...\n'
 predelete_errors=0
 current_count=0
 
-if ! find "$root" -type f -name '*.[Hh][Ee][Ii][Cc]' ! -name '.*' \
-    -print0 > "$final_scan"; then
-  printf 'Safety check failed: the final folder scan was incomplete.\n' >&2
+if ! scan_selected_roots eligible "$final_scan" "$final_seen_dir"; then
+  printf 'Safety check failed: one or more final folder scans were incomplete.\n' >&2
   predelete_errors=$((predelete_errors + 1))
 else
   while IFS= read -r -d '' current_heic; do
