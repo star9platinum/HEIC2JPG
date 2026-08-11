@@ -347,6 +347,7 @@ records_dir="$state_dir/records"
 planned_outputs_dir="$state_dir/planned-outputs"
 initial_scan="$state_dir/initial-heic-list"
 final_scan="$state_dir/final-heic-list"
+skipped_hidden_scan="$state_dir/skipped-hidden-heic-list"
 if ! mkdir "$records_dir" "$planned_outputs_dir"; then
   printf 'Error: could not initialize the safety workspace.\n' >&2
   exit 1
@@ -361,9 +362,30 @@ printf 'Image converter: %s\n' "$(command -v sips)"
 printf 'Subfolders are included.\n'
 printf 'All HEIC originals stay in place during conversion and manual review.\n\n'
 
-if ! find "$root" -type f -name '*.[Hh][Ee][Ii][Cc]' -print0 > "$initial_scan"; then
+if ! find "$root" -type f -name '*.[Hh][Ee][Ii][Cc]' ! -name '.*' \
+    -print0 > "$initial_scan"; then
   printf 'SAFETY STOP: The folder scan was incomplete. No files were changed.\n' >&2
   exit 1
+fi
+if ! find "$root" -type f -name '*.[Hh][Ee][Ii][Cc]' -name '.*' \
+    -print0 > "$skipped_hidden_scan"; then
+  printf 'SAFETY STOP: The hidden-file scan was incomplete. No files were changed.\n' >&2
+  exit 1
+fi
+
+skipped_hidden=0
+while IFS= read -r -d '' hidden_input; do
+  skipped_hidden=$((skipped_hidden + 1))
+  if [ "$skipped_hidden" -le 20 ]; then
+    printf 'Skip hidden HEIC (kept unchanged): %s\n' "$hidden_input"
+  fi
+done < "$skipped_hidden_scan"
+if [ "$skipped_hidden" -gt 20 ]; then
+  printf '...and %d more hidden HEIC files.\n' "$((skipped_hidden - 20))"
+fi
+if [ "$skipped_hidden" -gt 0 ]; then
+  printf 'Skipped %d hidden HEIC file(s); they will not be converted or deleted.\n\n' \
+    "$skipped_hidden"
 fi
 
 found=0
@@ -409,7 +431,7 @@ while IFS= read -r -d '' input; do
 done < "$initial_scan"
 
 if [ "$found" -eq 0 ]; then
-  printf 'No HEIC files were found.\n'
+  printf 'No non-hidden HEIC files were found.\n'
   exit 0
 fi
 if [ "$preflight_errors" -gt 0 ]; then
@@ -522,8 +544,8 @@ while IFS= read -r -d '' input; do
   converted=$((converted + 1))
 done < "$initial_scan"
 
-printf '\nConversion finished: %d found, %d converted and validated, %d errors.\n' \
-  "$found" "$converted" "$failed"
+printf '\nConversion finished: %d eligible, %d converted and validated, %d errors, %d hidden skipped.\n' \
+  "$found" "$converted" "$failed" "$skipped_hidden"
 printf 'No HEIC originals have been deleted.\n'
 
 if [ "$failed" -gt 0 ] || [ "$converted" -ne "$found" ]; then
@@ -556,7 +578,8 @@ printf '\nRunning final safety checks before deleting any HEIC files...\n'
 predelete_errors=0
 current_count=0
 
-if ! find "$root" -type f -name '*.[Hh][Ee][Ii][Cc]' -print0 > "$final_scan"; then
+if ! find "$root" -type f -name '*.[Hh][Ee][Ii][Cc]' ! -name '.*' \
+    -print0 > "$final_scan"; then
   printf 'Safety check failed: the final folder scan was incomplete.\n' >&2
   predelete_errors=$((predelete_errors + 1))
 else

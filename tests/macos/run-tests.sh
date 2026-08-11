@@ -96,6 +96,22 @@ assert_exists "$case_root/photos/first.jpg" 'first JPG created'
 assert_exists "$case_root/photos/sub folder/第二张.jpg" 'nested JPG created'
 assert_no_photo_temp "$case_root/photos" 'success leaves no photo temporary files'
 
+new_case 'hidden HEIC files are skipped'
+mkdir -p "$case_root/photos"
+printf 'normal\n' > "$case_root/photos/normal.HEIC"
+printf 'dot only\n' > "$case_root/photos/.HEIC"
+printf 'appledouble\n' > "$case_root/photos/._IMG_0001.HEIC"
+run_core 'DELETE ALL HEIC' "$case_root/photos" none __never_match__ __never_match__ __never_match__ -f
+assert_status 0 'hidden HEIC files do not fail the batch'
+assert_missing "$case_root/photos/normal.HEIC" 'eligible HEIC is still deleted after confirmation'
+assert_exists "$case_root/photos/normal.jpg" 'eligible HEIC is still converted'
+assert_exists "$case_root/photos/.HEIC" 'dot-only HEIC is kept unchanged'
+assert_exists "$case_root/photos/._IMG_0001.HEIC" 'AppleDouble-style HEIC is kept unchanged'
+assert_missing "$case_root/photos/.jpg" 'dot-only HEIC produces no JPG'
+assert_missing "$case_root/photos/._IMG_0001.jpg" 'AppleDouble-style HEIC produces no JPG'
+assert_log_contains 'Skipped 2 hidden HEIC file(s)' 'hidden HEIC skip count is reported'
+assert_log_contains 'Skip hidden HEIC (kept unchanged)' 'hidden HEIC paths are reported'
+
 new_case 'cancel confirmation'
 mkdir -p "$case_root/photos"
 printf 'keep\n' > "$case_root/photos/keep.HEIC"
