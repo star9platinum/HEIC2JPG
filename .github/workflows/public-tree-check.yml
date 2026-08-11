@@ -20,5 +20,19 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Smoke-test native macOS sips
+        run: |
+          set -eu
+          work=$(mktemp -d "${TMPDIR:-/tmp}/HEIC2JPG-sips.XXXXXX")
+          trap 'rm -rf "$work"' EXIT
+          printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' \
+            | /usr/bin/base64 -D > "$work/input.png"
+          /usr/bin/sips -s format jpeg -s formatOptions 90 "$work/input.png" \
+            --out "$work/output.jpg" > "$work/sips.log" 2>&1 || {
+              sed 's/^/  /' "$work/sips.log" >&2
+              exit 1
+            }
+          test -s "$work/output.jpg"
+          /usr/bin/sips -g format "$work/output.jpg" | grep -Eiq 'format:[[:space:]]*jpeg'
       - name: Test folder selection and deletion safety flow
         run: bash tests/macos/run-tests.sh

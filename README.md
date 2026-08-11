@@ -56,33 +56,21 @@ b68e312b21556ae8872704e37df3c69cbdc0ea7100366bf823e7e3a1b69405bc
 
 ## macOS
 
-命令行脚本可以直接指定照片根目录：
+macOS 版只有一个文件：[`src/macos/一键转换HEIC.command`](src/macos/%E4%B8%80%E9%94%AE%E8%BD%AC%E6%8D%A2HEIC.command)。下载后首次使用时执行：
 
 ```bash
-chmod +x src/macos/heic_to_jpg.sh
-./src/macos/heic_to_jpg.sh "/照片根目录"
+chmod +x "一键转换HEIC.command"
 ```
 
-不提供目录参数时也会弹出 macOS 文件夹选择器：
+以后直接在 Finder 中双击该文件，它会弹出 macOS 文件夹选择器。也可以在终端中直接指定照片根目录：
 
 ```bash
-./src/macos/heic_to_jpg.sh
+./一键转换HEIC.command "/照片根目录"
 ```
 
 支持 `-q 1..100` 设置 JPG 质量。默认情况下，只要发现已有同名 JPG，整批任务会在转换前安全停止；只有明确使用 `-f` 时才会用验证成功的新 JPG 替换已有的普通 JPG 文件。
 
-Finder 一键版由下面两个文件组成，必须放在同一个文件夹：
-
-- [`src/macos/一键转换HEIC.command`](src/macos/%E4%B8%80%E9%94%AE%E8%BD%AC%E6%8D%A2HEIC.command)
-- [`src/macos/heic_to_jpg.sh`](src/macos/heic_to_jpg.sh)
-
-首次使用时执行：
-
-```bash
-chmod +x "一键转换HEIC.command" heic_to_jpg.sh
-```
-
-以后在 Finder 中双击 `一键转换HEIC.command`：
+运行 `一键转换HEIC.command` 后：
 
 1. 在弹出的窗口中选择照片根目录。
 2. 脚本转换并验证全部 HEIC，但不删除原图。
@@ -90,7 +78,7 @@ chmod +x "一键转换HEIC.command" heic_to_jpg.sh
 4. 返回终端，只有确认无误后才输入 `DELETE ALL HEIC`。
 5. 脚本重新检查 HEIC 文件集合、源文件稳定快照、JPG 哈希和可解码性；全部通过后才删除原图。
 
-一键版默认不覆盖已有 JPG；只要存在同名目标，就会在转换前停止并保留全部文件。需要覆盖时请在终端中明确使用 `-f`。符号链接、目录、重复输出映射以及没有有效主文件名的 `.HEIC` 也会在转换前触发安全停止。
+一键版默认不覆盖已有 JPG；只要存在同名目标，就会在转换前停止并保留全部文件。需要覆盖时请在终端中明确使用 `-f`。符号链接、目录、重复输出映射以及没有有效主文件名的 `.HEIC` 也会在转换前触发安全停止。转换失败时会显示具体 HEIC 路径、`sips` 退出码和 macOS 返回的原始诊断信息。
 
 ## 公开仓库检查
 

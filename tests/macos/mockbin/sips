@@ -43,9 +43,19 @@ if [ -z "$input" ] || [ -z "$output" ] || [ ! -f "$input" ]; then
   exit 2
 fi
 
+case "$output" in
+  *.jpg)
+    ;;
+  *)
+    printf 'Error: mock sips requires a .jpg output filename: %s\n' "$output" >&2
+    exit 3
+    ;;
+esac
+
 case "$input" in
   *"${HEIC2JPG_SIPS_FAIL_MATCH:-__never_match__}"*)
     printf 'PARTIAL\n' > "$output"
+    printf 'Error: mock decoder rejected the input.\n' >&2
     exit 1
     ;;
 esac

@@ -1,6 +1,8 @@
 * text=auto
 *.sh text eol=lf
 *.command text eol=lf
+*.yml text eol=lf
+tests/macos/mockbin/* text eol=lf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
 *.md text eol=lf

@@ -4,8 +4,8 @@ set -u
 
 test_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P)
 repo_root=$(cd "$test_dir/../.." 2>/dev/null && pwd -P)
-converter="$repo_root/src/macos/heic_to_jpg.sh"
-one_click="$repo_root/src/macos/一键转换HEIC.command"
+converter="$repo_root/src/macos/一键转换HEIC.command"
+one_click=$converter
 mockbin="$test_dir/mockbin"
 real_path=$PATH
 workspace=$(mktemp -d "${TMPDIR:-/tmp}/HEIC2JPG-tests.XXXXXX") || exit 1
@@ -40,6 +40,10 @@ assert_status() {
 
 assert_nonzero_status() {
   if [ "$last_status" -ne 0 ]; then pass "$1"; else fail "$1"; fi
+}
+
+assert_log_contains() {
+  if grep -Fq "$1" "$output_log"; then pass "$2"; else fail "$2"; fi
 }
 
 assert_no_photo_temp() {
@@ -109,6 +113,10 @@ assert_nonzero_status 'one conversion failure fails the batch'
 assert_exists "$case_root/photos/good.HEIC" 'batch failure keeps successful source HEIC'
 assert_exists "$case_root/photos/fail.HEIC" 'batch failure keeps failed source HEIC'
 if grep -q '^open$' "$call_log"; then fail 'batch failure must not open review/delete phase'; else pass 'batch failure blocks review/delete phase'; fi
+assert_log_contains 'sips could not convert' 'conversion failure reports a specific conversion error'
+assert_log_contains '(exit 1)' 'conversion failure reports sips exit status'
+assert_log_contains 'mock decoder rejected the input' 'conversion failure preserves original sips diagnostic'
+assert_log_contains 'fail.HEIC' 'conversion failure identifies the source file'
 assert_no_photo_temp "$case_root/photos" 'conversion failure cleans photo temporary files'
 
 new_case 'invalid generated jpeg'
@@ -191,7 +199,7 @@ last_status=$?
 assert_status 0 'folder picker cancellation is a safe success'
 if grep -Eq '^(sips|open)$' "$call_log"; then fail 'picker cancellation performs no conversion or review'; else pass 'picker cancellation performs zero photo operations'; fi
 
-new_case 'one click wrapper'
+new_case 'single-file one click'
 mkdir -p "$case_root/photos"
 printf 'wrapper\n' > "$case_root/photos/wrapper.HEIC"
 printf 'DELETE ALL HEIC\n' | env \
@@ -202,9 +210,9 @@ printf 'DELETE ALL HEIC\n' | env \
   HEIC2JPG_TEST_OPEN_ACTION=none \
   bash "$one_click" > "$output_log" 2>&1
 last_status=$?
-assert_status 0 'Finder wrapper uses picker and exact confirmation flow'
-assert_missing "$case_root/photos/wrapper.HEIC" 'Finder wrapper deletes only after confirmation'
-assert_exists "$case_root/photos/wrapper.jpg" 'Finder wrapper creates JPG'
+assert_status 0 'single Finder file uses picker and exact confirmation flow'
+assert_missing "$case_root/photos/wrapper.HEIC" 'single Finder file deletes only after confirmation'
+assert_exists "$case_root/photos/wrapper.jpg" 'single Finder file creates JPG'
 
 new_case 'duplicate output preflight'
 mkdir -p "$case_root/photos"
