@@ -1,0 +1,41 @@
+#!/bin/bash
+
+root=$1
+if [ -n "${HEIC2JPG_TEST_CALL_LOG:-}" ]; then
+  printf 'open\n' >> "$HEIC2JPG_TEST_CALL_LOG"
+fi
+
+case "${HEIC2JPG_TEST_OPEN_ACTION:-none}" in
+  none)
+    ;;
+  fail)
+    exit 1
+    ;;
+  corrupt_jpg)
+    while IFS= read -r -d '' file; do
+      printf 'CORRUPT_JPEG\n' > "$file"
+      break
+    done < <(find "$root" -type f -name '*.jpg' -print0)
+    ;;
+  add_heic)
+    while IFS= read -r -d '' file; do
+      cp "$file" "$root/added-during-review.HEIC"
+      break
+    done < <(find "$root" -type f -name '*.[Hh][Ee][Ii][Cc]' -print0)
+    ;;
+  mutate_heic)
+    while IFS= read -r -d '' file; do
+      printf 'changed-during-review\n' >> "$file"
+      break
+    done < <(find "$root" -type f -name '*.[Hh][Ee][Ii][Cc]' -print0)
+    ;;
+  add_non_heic)
+    printf 'unrelated\n' > "$root/added-during-review.txt"
+    ;;
+  *)
+    printf 'Unknown mock open action: %s\n' "$HEIC2JPG_TEST_OPEN_ACTION" >&2
+    exit 2
+    ;;
+esac
+
+exit 0

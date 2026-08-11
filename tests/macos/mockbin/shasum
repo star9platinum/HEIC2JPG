@@ -1,0 +1,10 @@
+#!/bin/bash
+
+if [ "$(uname -s)" = 'Darwin' ]; then
+  exec /usr/bin/shasum "$@"
+fi
+
+if [ "${1:-}" = '-a' ] && [ "${2:-}" = '256' ]; then
+  shift 2
+fi
+exec /usr/bin/sha256sum "$@"

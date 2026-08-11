@@ -8,13 +8,14 @@
 
 - 递归处理子文件夹，支持包含空格、中文及常见特殊字符的路径。
 - JPG 与原 HEIC 保存在同一目录，并使用相同的基本文件名。
-- Windows 版完全转换并校验后，会打开照片目录供人工检查。
-- Windows 版只有在用户准确输入 `DELETE ALL HEIC` 且最终复检全部通过后，才会永久删除 HEIC。
+- Windows 和 macOS 版都会先选择照片文件夹，并递归处理全部子文件夹。
+- 完全转换并校验后，会打开照片目录供人工检查。
+- 只有用户准确输入 `DELETE ALL HEIC` 且最终复检全部通过后，才会永久删除 HEIC。
 - Windows 离线包可在联网电脑上用官方 ImageMagick 归档本地生成；生成过程本身不联网。
 - macOS 版使用系统自带的 `sips`，无需安装转换软件。
 
 > [!CAUTION]
-> 删除的 HEIC 不经过回收站。请先备份重要照片，并先用少量副本测试。Windows 版有人工检查步骤；当前 macOS 脚本则会在每张照片成功转换后立即删除对应 HEIC。
+> 删除的 HEIC 不经过废纸篓或回收站。请先备份重要照片，并先用少量副本测试。两个平台都会在转换后要求人工检查和精确确认，但多文件删除无法成为一个不可分割的事务；删除过程中断电或权限变化仍可能造成部分文件已删除。
 
 ## Windows 10/11 x64
 
@@ -55,22 +56,41 @@ b68e312b21556ae8872704e37df3c69cbdc0ea7100366bf823e7e3a1b69405bc
 
 ## macOS
 
-命令行脚本：
+命令行脚本可以直接指定照片根目录：
 
 ```bash
 chmod +x src/macos/heic_to_jpg.sh
 ./src/macos/heic_to_jpg.sh "/照片根目录"
 ```
 
-支持 `-q 1..100` 设置 JPG 质量，使用 `-f` 覆盖已有的同名 JPG。
-
-Finder 一键版位于 [`src/macos/一键转换HEIC.command`](src/macos/%E4%B8%80%E9%94%AE%E8%BD%AC%E6%8D%A2HEIC.command)。把它复制到需要处理的照片根目录，执行一次：
+不提供目录参数时也会弹出 macOS 文件夹选择器：
 
 ```bash
-chmod +x "一键转换HEIC.command"
+./src/macos/heic_to_jpg.sh
 ```
 
-以后可在 Finder 中双击运行，它会处理脚本所在目录及全部子目录。该版本会在单张照片成功转换后立即删除对应 HEIC，请务必先备份。
+支持 `-q 1..100` 设置 JPG 质量。默认情况下，只要发现已有同名 JPG，整批任务会在转换前安全停止；只有明确使用 `-f` 时才会用验证成功的新 JPG 替换已有的普通 JPG 文件。
+
+Finder 一键版由下面两个文件组成，必须放在同一个文件夹：
+
+- [`src/macos/一键转换HEIC.command`](src/macos/%E4%B8%80%E9%94%AE%E8%BD%AC%E6%8D%A2HEIC.command)
+- [`src/macos/heic_to_jpg.sh`](src/macos/heic_to_jpg.sh)
+
+首次使用时执行：
+
+```bash
+chmod +x "一键转换HEIC.command" heic_to_jpg.sh
+```
+
+以后在 Finder 中双击 `一键转换HEIC.command`：
+
+1. 在弹出的窗口中选择照片根目录。
+2. 脚本转换并验证全部 HEIC，但不删除原图。
+3. Finder 自动打开所选目录，供你人工检查 JPG。
+4. 返回终端，只有确认无误后才输入 `DELETE ALL HEIC`。
+5. 脚本重新检查 HEIC 文件集合、源文件稳定快照、JPG 哈希和可解码性；全部通过后才删除原图。
+
+一键版默认不覆盖已有 JPG；只要存在同名目标，就会在转换前停止并保留全部文件。需要覆盖时请在终端中明确使用 `-f`。符号链接、目录、重复输出映射以及没有有效主文件名的 `.HEIC` 也会在转换前触发安全停止。
 
 ## 公开仓库检查
 
@@ -82,6 +102,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-public-tree.
 
 它会拒绝 Git 已跟踪文件中的 EXE、压缩包、照片、视频、缓存目录和 AppleDouble 元数据。
 
+macOS 安全流程的模拟测试可执行：
+
+```bash
+bash tests/macos/run-tests.sh
+```
+
 ## 第三方依赖与许可证
 
 本项目代码和文档采用 [MIT License](LICENSE)。该许可只覆盖本仓库自行创作的文件，不覆盖 ImageMagick 或其编解码库。
@@ -92,8 +118,8 @@ ImageMagick 版权所有 © ImageMagick Studio LLC，并受独立的 [ImageMagic
 
 ## 数据安全说明
 
-- 如果任何 HEIC 转换失败，Windows 版不会启动批量删除。
-- 人工检查期间修改、移动或新增 JPG/HEIC，会触发 Windows 版安全停止。
-- Windows 版删除前会重新核验 HEIC 文件集合、文件哈希和 JPG 可解码性。
-- 已有同名 JPG 可能被成功转换的新文件覆盖；请先备份。
+- 任一 HEIC 转换或验证失败，整批任务都不会启动删除。
+- 人工检查期间修改或移动本次生成的 JPG，或者新增、移动、修改 HEIC，会触发安全停止。
+- 删除前会重新核验 HEIC 文件集合、源文件快照、文件哈希和 JPG 可解码性。
+- Windows 版以及明确使用 macOS `-f` 参数时可能替换已有同名 JPG；请先备份。
 - iCloud/OneDrive 的仅联机文件必须先完整下载到本机。

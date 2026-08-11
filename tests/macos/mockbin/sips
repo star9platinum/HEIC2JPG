@@ -1,0 +1,73 @@
+#!/bin/bash
+
+inspect=0
+input=''
+output=''
+
+if [ -n "${HEIC2JPG_TEST_CALL_LOG:-}" ]; then
+  printf 'sips\n' >> "$HEIC2JPG_TEST_CALL_LOG"
+fi
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -g)
+      inspect=1
+      shift 2
+      ;;
+    -s)
+      shift 2
+      ;;
+    --out)
+      output=$2
+      shift 2
+      ;;
+    *)
+      input=$1
+      shift
+      ;;
+  esac
+done
+
+if [ "$inspect" -eq 1 ]; then
+  if [ ! -f "$input" ] || ! grep -q '^MOCK_JPEG$' "$input"; then
+    exit 1
+  fi
+  printf '%s\n' "$input:"
+  printf '  format: jpeg\n'
+  printf '  pixelWidth: 100\n'
+  printf '  pixelHeight: 80\n'
+  exit 0
+fi
+
+if [ -z "$input" ] || [ -z "$output" ] || [ ! -f "$input" ]; then
+  exit 2
+fi
+
+case "$input" in
+  *"${HEIC2JPG_SIPS_FAIL_MATCH:-__never_match__}"*)
+    printf 'PARTIAL\n' > "$output"
+    exit 1
+    ;;
+esac
+
+case "$input" in
+  *"${HEIC2JPG_SIPS_INVALID_MATCH:-__never_match__}"*)
+    printf 'NOT_A_JPEG\n' > "$output"
+    exit 0
+    ;;
+esac
+
+if grep -q '^MOCK_JPEG$' "$input"; then
+  cp "$input" "$output"
+else
+  printf 'MOCK_JPEG\n' > "$output"
+  cat "$input" >> "$output"
+fi
+
+case "$input" in
+  *"${HEIC2JPG_SIPS_MUTATE_MATCH:-__never_match__}"*)
+    printf 'changed-during-conversion\n' >> "$input"
+    ;;
+esac
+
+exit 0

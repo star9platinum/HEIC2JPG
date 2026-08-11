@@ -1,0 +1,21 @@
+#!/bin/bash
+
+if [ "$#" -ge 3 ] && [ "$1" = '-f' ]; then
+  format=$2
+  path=$3
+  if [ "$(uname -s)" = 'Darwin' ]; then
+    /usr/bin/stat -f "$format" "$path"
+  else
+    case "$format" in
+      '%Lp')
+        /usr/bin/stat -c '%a' "$path"
+        ;;
+      *)
+        /usr/bin/stat -c '%d:%i:%s:%Y:%Z' "$path"
+        ;;
+    esac
+  fi
+  exit $?
+fi
+
+exec /usr/bin/stat "$@"

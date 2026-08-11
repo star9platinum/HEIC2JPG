@@ -15,3 +15,10 @@ jobs:
       - name: Reject binaries, archives, and media
         shell: powershell
         run: .\scripts\check-public-tree.ps1
+
+  macos-logic-tests:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Test folder selection and deletion safety flow
+        run: bash tests/macos/run-tests.sh
