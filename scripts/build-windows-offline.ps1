@@ -83,6 +83,7 @@ try {
     }
 
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'src\windows\HEIC_to_JPG_Offline.cmd') -Destination $packageStaging
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'src\windows\清理HEIC2JPG临时文件.cmd') -Destination $packageStaging
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'packaging\windows\README-Windows.txt') -Destination $packageStaging
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'packaging\windows\RUNTIME_SOURCE_AND_LICENSE.txt') -Destination $packageStaging
 

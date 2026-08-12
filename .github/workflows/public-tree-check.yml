@@ -15,6 +15,9 @@ jobs:
       - name: Reject binaries, archives, and media
         shell: powershell
         run: .\scripts\check-public-tree.ps1
+      - name: Test Windows conversion and cleanup flows
+        shell: powershell
+        run: .\tests\windows\run-tests.ps1
 
   macos-logic-tests:
     runs-on: macos-latest

@@ -8,12 +8,12 @@
 
 - 递归处理子文件夹，支持包含空格、中文及常见特殊字符的路径。
 - JPG 与原 HEIC 保存在同一目录，并使用相同的基本文件名。
-- Windows 和 macOS 版都会先选择照片文件夹，并递归处理全部子文件夹；macOS 支持一次多选目录。
+- Windows 和 macOS 版都支持选择多个照片根目录，并递归处理全部子文件夹；重叠目录中的同一 HEIC 只处理一次。
 - 完全转换并校验后，会打开照片目录供人工检查。
-- Windows 版输入 `DELETE ALL HEIC`，macOS 版输入 `y` 或 `Y`，且最终复检全部通过后才会永久删除 HEIC。
+- 两个平台都只在输入 `y` 或 `Y` 后永久删除成功项对应的 HEIC。
 - Windows 离线包可在联网电脑上用官方 ImageMagick 归档本地生成；生成过程本身不联网。
 - macOS 版使用系统自带的 `sips`，无需安装转换软件。
-- macOS 版终端提示、帮助和文件夹选择提示默认使用中文。
+- 两个平台的提示、帮助和文件夹选择界面默认使用中文。
 
 > [!CAUTION]
 > 删除的 HEIC 不经过废纸篓或回收站。请先备份重要照片，并先用少量副本测试。两个平台都会在转换后要求人工检查和精确确认，但多文件删除无法成为一个不可分割的事务；删除过程中断电或权限变化仍可能造成部分文件已删除。
@@ -25,6 +25,7 @@ Windows 脚本位于 [`src/windows/HEIC_to_JPG_Offline.cmd`](src/windows/HEIC_to
 ```text
 HEIC_to_JPG_Offline_Windows_x64/
 ├── HEIC_to_JPG_Offline.cmd
+├── 清理HEIC2JPG临时文件.cmd
 ├── README-Windows.txt
 ├── RUNTIME_SOURCE_AND_LICENSE.txt
 └── ImageMagick/
@@ -53,7 +54,15 @@ HEIC_to_JPG_Offline_Windows_x64/
 b68e312b21556ae8872704e37df3c69cbdc0ea7100366bf823e7e3a1b69405bc
 ```
 
-运行时也可以把照片文件夹直接拖到 CMD 上。转换完成后请手动打开 JPG 检查方向、画质和数量；只有确认无误后才输入删除确认词。
+双击运行时可以逐次添加多个照片根目录，也可以把一个或多个文件夹拖到 CMD 上。Windows 版与 macOS 版采用相同的主要行为：默认质量 90，`-f` 成功后覆盖，`-s` 严格模式，已有同名 JPG 默认验证并复用，失败项单独保留，点开头 HEIC 跳过，以及 `y/Y` 删除确认。命令行用法为：
+
+```powershell
+HEIC_to_JPG_Offline.cmd [-f] [-s] [-q 1..100] [目录一] [目录二] ...
+```
+
+默认轻量模式只在转换或复用阶段验证一次 JPG；人工检查后的删除前检查只确认同名 JPG 仍为非空普通文件。严格模式会重新扫描 HEIC 集合、复核 HEIC/JPG SHA-256，并再次完整解码 JPG。Windows 的完整解码使用 ImageMagick `null:` 输出：它读取整张图片但不生成验证图片，因此验证不会再占用一张照片大小的临时磁盘空间。
+
+转换临时目录位于原照片所在磁盘，每张完成后立即删除。异常关机可能留下临时项；确认没有转换任务在运行后，可双击 [`src/windows/清理HEIC2JPG临时文件.cmd`](src/windows/%E6%B8%85%E7%90%86HEIC2JPG%E4%B8%B4%E6%97%B6%E6%96%87%E4%BB%B6.cmd) 选择多个目录、预览候选和大小，再输入 `y` 或 `Y` 彻底清理。
 
 ## macOS
 
@@ -118,6 +127,12 @@ macOS 安全流程的模拟测试可执行：
 bash tests/macos/run-tests.sh
 ```
 
+Windows 转换、续传、删除门禁和临时清理的模拟测试可执行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows\run-tests.ps1
+```
+
 ## 第三方依赖与许可证
 
 本项目代码和文档采用 [MIT License](LICENSE)。该许可只覆盖本仓库自行创作的文件，不覆盖 ImageMagick 或其编解码库。
@@ -128,8 +143,8 @@ ImageMagick 版权所有 © ImageMagick Studio LLC，并受独立的 [ImageMagic
 
 ## 数据安全说明
 
-- macOS 版会保留损坏、转换失败或已有 JPG 无法确认的 HEIC，并继续处理其他文件；确认后只删除验证成功项的 HEIC。Windows 版仍采用整批删除门禁。
+- 两个平台都会保留损坏、转换失败或已有 JPG 无法确认的 HEIC，并继续处理其他文件；确认后只删除验证成功项对应的 HEIC。
 - 默认轻量模式在删除前只检查同名 JPG 是否为非空普通文件；它不会发现 JPG 内容被替换、损坏但仍非空，或 HEIC 集合发生变化，因此必须认真完成人工检查。
 - `-s` 严格模式下，人工检查期间修改或移动 JPG，或者新增、移动、修改 HEIC，会触发安全停止；删除前会复核 HEIC 集合、文件快照、SHA-256 和 JPG 可解码性。
-- Windows 版以及明确使用 macOS `-f` 参数时可能替换已有同名 JPG；请先备份。
+- 两个平台都只在明确使用 `-f` 时尝试替换已有同名普通 JPG，而且只在新 JPG 转换并验证成功后替换；请先备份。
 - iCloud/OneDrive 的仅联机文件必须先完整下载到本机。
