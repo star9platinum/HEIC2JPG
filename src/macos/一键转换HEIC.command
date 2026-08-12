@@ -8,7 +8,7 @@ set -u
 
 overwrite=0
 quality=90
-trust_decodable_existing=0
+strict_mode=0
 temp_parent=${TMPDIR:-/tmp}
 temp_parent=${temp_parent%/}
 if [ -z "$temp_parent" ]; then
@@ -35,16 +35,17 @@ receipt_output_attribute='io.github.star9platinum.heic2jpg.output-sha256'
 
 usage() {
   cat <<'EOF'
-用法：一键转换HEIC.command [-f] [-q 质量] [文件夹 ...]
+用法：一键转换HEIC.command [-f] [-s] [-q 质量] [文件夹 ...]
 
 选项：
   -f          重新转换并替换已有的同名普通 JPG 文件
+  -s          严格模式：使用 SHA-256 指纹并执行完整的删除前复检
   -q 质量     JPEG 质量，范围 1 到 100（默认：90）
   -h          显示此帮助
 
 如果没有指定文件夹，会显示可多选的 macOS 文件夹选择器，并包含所有子文件夹。
-转换和人工检查期间会保留 HEIC 原图。只有对应 JPG 已验证、输入 y 或 Y，
-并且全部最终安全检查通过后，才会删除原图。
+默认使用轻量模式：同名 JPG 只需完整解码一次；人工检查并输入 y 或 Y 后，
+删除前只确认同名 JPG 仍是非空普通文件。转换和人工检查期间保留 HEIC 原图。
 EOF
 }
 
@@ -145,6 +146,9 @@ APPLESCRIPT
 sha256_file() {
   if [ ! -f "$1" ]; then
     return 1
+  fi
+  if [ -n "${HEIC2JPG_TEST_CALL_LOG:-}" ]; then
+    printf 'content-sha256:%s\n' "$1" >> "$HEIC2JPG_TEST_CALL_LOG"
   fi
   shasum -a 256 < "$1" 2>/dev/null | awk '{print $1}'
 }
@@ -258,6 +262,11 @@ snapshot_file() {
   return 0
 }
 
+snapshot_file_stat() {
+  snapshot_stat=$(stat -f '%d:%i:%z:%m:%c' "$1" 2>/dev/null) || return 1
+  [ -n "$snapshot_stat" ]
+}
+
 validate_jpeg() {
   local jpeg_path=$1
   local info
@@ -369,7 +378,7 @@ save_safety_record() {
   local source_key
 
   source_key=$(path_key "$source_path")
-  if [ -z "$output_hash_value" ] || [ -z "$source_key" ] || \
+  if [ -z "$source_key" ] || \
       [ -e "$records_dir/$source_key" ]; then
     return 1
   fi
@@ -395,10 +404,13 @@ read_confirmation() {
   IFS= read -r confirmation < /dev/tty
 }
 
-while getopts ':fq:h' option; do
+while getopts ':fsq:h' option; do
   case "$option" in
     f)
       overwrite=1
+      ;;
+    s)
+      strict_mode=1
       ;;
     q)
       quality=$OPTARG
@@ -495,12 +507,16 @@ while [ "$requested_index" -lt "$requested_count" ]; do
   requested_index=$((requested_index + 1))
 done
 
-for required_command in sips shasum stat find awk grep open mktemp xattr; do
+for required_command in sips shasum stat find awk grep open mktemp; do
   if ! command -v "$required_command" >/dev/null 2>&1; then
     printf '错误：找不到必需的 macOS 命令：%s\n' "$required_command" >&2
     exit 1
   fi
 done
+if [ "$strict_mode" -eq 1 ] && ! command -v xattr >/dev/null 2>&1; then
+  printf '错误：严格模式需要 macOS 命令 xattr，但当前系统中找不到。\n' >&2
+  exit 1
+fi
 
 if ! state_dir=$(mktemp -d "$temp_parent/HEIC2JPG.XXXXXX"); then
   printf '错误：无法创建私有安全工作区。\n' >&2
@@ -547,24 +563,11 @@ printf '图片转换器：%s\n' "$(command -v sips)"
 printf '将包含全部子文件夹。\n'
 printf '转换和人工检查期间，所有 HEIC 原图都会保留。\n\n'
 
-if [ "$overwrite" -eq 0 ]; then
-  printf '兼容续传选项：是否把“同名且能完整解码”的已有 JPG 直接视为转换成功？[y/N]：'
-  confirmation=''
-  if read_confirmation; then
-    case "$confirmation" in
-      y|Y)
-        trust_decodable_existing=1
-        printf '已启用宽松续传：将跳过 JPG 与旁边 HEIC 的来源指纹核验。请务必人工确认照片内容。\n\n'
-        ;;
-      *)
-        printf '使用默认严格续传：必须同时匹配 HEIC 和 JPG 的 SHA-256 断点指纹。\n\n'
-        ;;
-    esac
-  else
-    printf '\n未收到输入，使用默认严格续传。\n\n'
-  fi
+if [ "$strict_mode" -eq 1 ]; then
+  printf '当前模式：严格。将核验照片内容的 SHA-256，并在删除前执行完整复检。\n\n'
 else
-  printf '已使用 -f：已有同名 JPG 将重新转换并替换，不启用断点复用。\n\n'
+  printf '当前模式：默认轻量。已有同名 JPG 完整解码一次即视为成功；删除前只检查同名 JPG 是否为非空普通文件。\n'
+  printf '此模式不验证 JPG 是否来自旁边的 HEIC，请务必在 Finder 中人工检查。\n\n'
 fi
 
 if ! scan_selected_roots eligible "$initial_scan" "$initial_seen_dir"; then
@@ -627,10 +630,10 @@ while IFS= read -r -d '' input; do
       printf '预检查失败：已有的 JPG 目标不是普通文件：%s\n' "$output" >&2
       preflight_errors=$((preflight_errors + 1))
     elif [ "$overwrite" -eq 0 ]; then
-      if [ "$trust_decodable_existing" -eq 1 ]; then
-        printf '发现宽松续传候选，将只验证 JPG 能否完整解码：%s\n' "$output"
-      else
+      if [ "$strict_mode" -eq 1 ]; then
         printf '发现断点续传候选，将核验来源与文件指纹：%s\n' "$output"
+      else
+        printf '发现轻量续传候选，将验证 JPG 能否完整解码：%s\n' "$output"
       fi
     fi
   fi
@@ -655,27 +658,38 @@ while IFS= read -r -d '' input; do
   output=${input%.*}.jpg
   output_dir=${output%/*}
 
-  if ! snapshot_file "$input"; then
-    printf '失败，已保留原图：源文件状态不稳定：%s\n' "$input" >&2
-    failed=$((failed + 1))
-    continue
+  if [ "$strict_mode" -eq 1 ]; then
+    if ! snapshot_file "$input"; then
+      printf '失败，已保留原图：无法稳定读取源文件：%s\n' "$input" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    source_stat=$snapshot_stat
+    source_hash=$snapshot_hash
+  else
+    if ! snapshot_file_stat "$input"; then
+      printf '失败，已保留原图：无法读取源文件状态：%s\n' "$input" >&2
+      failed=$((failed + 1))
+      continue
+    fi
+    source_stat=$snapshot_stat
+    source_hash=''
   fi
-  source_stat=$snapshot_stat
-  source_hash=$snapshot_hash
 
   if { [ -e "$output" ] || [ -L "$output" ]; } && [ "$overwrite" -eq 0 ]; then
-    if [ -L "$output" ] || [ ! -f "$output" ]; then
-      printf '已跳过并保留原图：已有 JPG 已不再是普通文件：%s\n' \
+    if [ -L "$output" ] || [ ! -f "$output" ] || [ ! -s "$output" ]; then
+      printf '已跳过并保留原图：已有 JPG 不是非空普通文件：%s\n' \
         "$output" >&2
       failed=$((failed + 1))
       continue
     fi
 
-    if [ "$trust_decodable_existing" -eq 0 ]; then
+    existing_output_hash=''
+    if [ "$strict_mode" -eq 1 ]; then
       if ! read_resume_receipt "$output"; then
         printf '已跳过并保留原图：已有 JPG 没有本脚本写入的断点续传指纹：%s\n' \
           "$output" >&2
-        printf '可在下次运行开始时输入 y 启用宽松续传，或使用 -f 重新转换。\n' >&2
+        printf '可以不使用 -s 进行轻量续传，或使用 -f 重新转换。\n' >&2
         failed=$((failed + 1))
         continue
       fi
@@ -684,26 +698,24 @@ while IFS= read -r -d '' input; do
       if [ "$expected_source_hash" != "$source_hash" ]; then
         printf '已跳过并保留原图：断点记录中的 HEIC 指纹与当前原图不一致：%s\n' \
           "$input" >&2
-        printf '可在下次运行开始时输入 y 启用宽松续传，或使用 -f 重新转换。\n' >&2
+        printf '可以不使用 -s 进行轻量续传，或使用 -f 重新转换。\n' >&2
         failed=$((failed + 1))
         continue
       fi
-    fi
-
-    if ! snapshot_file "$output"; then
-      printf '已跳过并保留原图：已有 JPG 状态不稳定：%s\n' "$output" >&2
-      failed=$((failed + 1))
-      continue
-    fi
-    existing_output_stat=$snapshot_stat
-    existing_output_hash=$snapshot_hash
-    if [ "$trust_decodable_existing" -eq 0 ] && \
-        [ "$existing_output_hash" != "$expected_output_hash" ]; then
-      printf '已跳过并保留原图：已有 JPG 的内容指纹与断点记录不一致：%s\n' \
-        "$output" >&2
-      printf '可在下次运行开始时输入 y 启用宽松续传，或使用 -f 重新转换。\n' >&2
-      failed=$((failed + 1))
-      continue
+      if ! snapshot_file "$output"; then
+        printf '已跳过并保留原图：无法稳定读取已有 JPG：%s\n' "$output" >&2
+        failed=$((failed + 1))
+        continue
+      fi
+      existing_output_stat=$snapshot_stat
+      existing_output_hash=$snapshot_hash
+      if [ "$existing_output_hash" != "$expected_output_hash" ]; then
+        printf '已跳过并保留原图：已有 JPG 的内容指纹与断点记录不一致：%s\n' \
+          "$output" >&2
+        printf '可以不使用 -s 进行轻量续传，或使用 -f 重新转换。\n' >&2
+        failed=$((failed + 1))
+        continue
+      fi
     fi
 
     printf '验证已有 JPG：%s -> %s\n' "$input" "$output"
@@ -712,21 +724,21 @@ while IFS= read -r -d '' input; do
       failed=$((failed + 1))
       continue
     fi
-    if ! snapshot_file "$output" || [ "$snapshot_stat" != "$existing_output_stat" ] || \
-        [ "$snapshot_hash" != "$existing_output_hash" ]; then
-      printf '已跳过并保留原图：已有 JPG 在验证期间发生变化：%s\n' \
-        "$output" >&2
-      failed=$((failed + 1))
-      continue
-    fi
-    if ! snapshot_file "$input" || [ "$snapshot_stat" != "$source_stat" ] || \
-        [ "$snapshot_hash" != "$source_hash" ]; then
-      printf '已跳过并保留原图：验证 JPG 时源 HEIC 发生变化：%s\n' \
-        "$input" >&2
-      failed=$((failed + 1))
-      continue
-    fi
-    if [ "$trust_decodable_existing" -eq 0 ]; then
+    if [ "$strict_mode" -eq 1 ]; then
+      if ! snapshot_file "$output" || [ "$snapshot_stat" != "$existing_output_stat" ] || \
+          [ "$snapshot_hash" != "$existing_output_hash" ]; then
+        printf '已跳过并保留原图：已有 JPG 在验证期间发生变化：%s\n' \
+          "$output" >&2
+        failed=$((failed + 1))
+        continue
+      fi
+      if ! snapshot_file "$input" || [ "$snapshot_stat" != "$source_stat" ] || \
+          [ "$snapshot_hash" != "$source_hash" ]; then
+        printf '已跳过并保留原图：验证 JPG 时源 HEIC 发生变化：%s\n' \
+          "$input" >&2
+        failed=$((failed + 1))
+        continue
+      fi
       if ! read_resume_receipt "$output" || \
           [ "$receipt_source_hash" != "$expected_source_hash" ] || \
           [ "$receipt_output_hash" != "$expected_output_hash" ]; then
@@ -744,10 +756,10 @@ while IFS= read -r -d '' input; do
       continue
     fi
 
-    if [ "$trust_decodable_existing" -eq 1 ]; then
-      printf '宽松续传成功：同名 JPG 已通过完整解码验证；未核验它是否由旁边的 HEIC 转换而来，请人工确认。\n'
-    else
+    if [ "$strict_mode" -eq 1 ]; then
       printf '断点续传成功：来源和 JPG 的 SHA-256 指纹一致，且 JPG 已通过完整解码验证；删除前仍请人工检查。\n'
+    else
+      printf '轻量续传成功：同名 JPG 已通过一次完整解码；未核验它是否由旁边的 HEIC 转换而来，请人工确认。\n'
     fi
     reused=$((reused + 1))
     continue
@@ -784,12 +796,21 @@ while IFS= read -r -d '' input; do
     continue
   fi
 
-  if ! snapshot_file "$input" || [ "$snapshot_stat" != "$source_stat" ] || \
-      [ "$snapshot_hash" != "$source_hash" ]; then
-    printf '失败，已保留原图：源 HEIC 在转换期间发生变化。\n' >&2
-    discard_conversion_temp
-    failed=$((failed + 1))
-    continue
+  if [ "$strict_mode" -eq 1 ]; then
+    if ! snapshot_file "$input" || [ "$snapshot_stat" != "$source_stat" ] || \
+        [ "$snapshot_hash" != "$source_hash" ]; then
+      printf '失败，已保留原图：源 HEIC 在转换期间发生变化。\n' >&2
+      discard_conversion_temp
+      failed=$((failed + 1))
+      continue
+    fi
+  else
+    if ! snapshot_file_stat "$input" || [ "$snapshot_stat" != "$source_stat" ]; then
+      printf '失败，已保留原图：源 HEIC 在转换期间发生变化。\n' >&2
+      discard_conversion_temp
+      failed=$((failed + 1))
+      continue
+    fi
   fi
 
   source_mode=$(stat -f '%Lp' "$input" 2>/dev/null)
@@ -819,12 +840,15 @@ while IFS= read -r -d '' input; do
   rm -rf "$conversion_temp_dir" 2>/dev/null || true
   conversion_temp_dir=''
 
-  output_hash=$(sha256_file "$output")
-  if [ -n "$output_hash" ] && \
-      ! write_resume_receipt "$output" "$source_hash" "$output_hash"; then
-    printf '警告：无法在 JPG 上写入断点续传指纹；本次仍可安全确认删除，但中断后需要用 -f 重新转换：%s\n' \
-      "$output" >&2
-    receipt_warnings=$((receipt_warnings + 1))
+  output_hash=''
+  if [ "$strict_mode" -eq 1 ]; then
+    output_hash=$(sha256_file "$output")
+    if [ -n "$output_hash" ] && \
+        ! write_resume_receipt "$output" "$source_hash" "$output_hash"; then
+      printf '警告：无法在 JPG 上写入严格续传指纹；本次仍可确认删除，但严格续传需要用 -f 重新转换：%s\n' \
+        "$output" >&2
+      receipt_warnings=$((receipt_warnings + 1))
+    fi
   fi
   if ! save_safety_record "$input" "$output" "$source_stat" "$source_hash" \
       "$output_hash"; then
@@ -840,7 +864,7 @@ ready=$((converted + reused))
 printf '\n转换结束：共 %d 个可处理文件，新转换 %d 个，断点续传 %d 个，因问题跳过 %d 个，跳过隐藏文件 %d 个。\n' \
   "$found" "$converted" "$reused" "$failed" "$skipped_hidden"
 printf '目前尚未删除任何 HEIC 原图。\n'
-if [ "$receipt_warnings" -gt 0 ]; then
+if [ "$strict_mode" -eq 1 ] && [ "$receipt_warnings" -gt 0 ]; then
   printf '其中 %d 个 JPG 无法保存持久断点指纹；如果本次中断，重新运行时需要使用 -f。\n' \
     "$receipt_warnings" >&2
 fi
@@ -887,88 +911,113 @@ case "$confirmation" in
     ;;
 esac
 
-printf '\n删除前正在执行最终安全检查……\n'
-predelete_errors=0
-current_count=0
-
-if ! scan_selected_roots eligible "$final_scan" "$final_seen_dir"; then
-  printf '安全检查失败：一个或多个文件夹的最终扫描不完整。\n' >&2
-  predelete_errors=$((predelete_errors + 1))
-else
-  while IFS= read -r -d '' current_heic; do
-    current_count=$((current_count + 1))
-    current_key=$(path_key "$current_heic")
-    if [ -z "$current_key" ] || [ ! -f "$initial_seen_dir/$current_key" ]; then
-      printf '安全检查失败：发现非预期的 HEIC 文件：%s\n' "$current_heic" >&2
-      predelete_errors=$((predelete_errors + 1))
-    fi
-  done < "$final_scan"
-fi
-
-if [ "$current_count" -ne "$found" ]; then
-  printf '安全检查失败：人工检查期间 HEIC 文件集合发生变化。\n' >&2
-  predelete_errors=$((predelete_errors + 1))
-fi
-
-for record_path in "$records_dir"/*; do
-  if ! load_record "$record_path"; then
-    printf '安全检查失败：有一条安全记录无法读取。\n' >&2
-    predelete_errors=$((predelete_errors + 1))
-    continue
-  fi
-
-  if ! snapshot_file "$record_source" || [ "$snapshot_stat" != "$record_source_stat" ] || \
-      [ "$snapshot_hash" != "$record_source_hash" ]; then
-    printf '安全检查失败：源 HEIC 已发生变化：%s\n' "$record_source" >&2
-    predelete_errors=$((predelete_errors + 1))
-  fi
-
-  current_output_hash=$(sha256_file "$record_output")
-  if [ -z "$current_output_hash" ] || [ "$current_output_hash" != "$record_output_hash" ]; then
-    printf '安全检查失败：生成的 JPG 已发生变化：%s\n' "$record_output" >&2
-    predelete_errors=$((predelete_errors + 1))
-  elif ! validate_jpeg "$record_output"; then
-    printf '安全检查失败：生成的 JPG 已无法通过验证：%s\n' "$record_output" >&2
-    predelete_errors=$((predelete_errors + 1))
-  fi
-done
-
-if [ "$predelete_errors" -gt 0 ]; then
-  printf '安全停止：%d 项最终检查失败，没有删除任何 HEIC。\n' \
-    "$predelete_errors" >&2
-  exit 1
-fi
-
 deleted=0
 delete_errors=0
 
-for record_path in "$records_dir"/*; do
-  if ! load_record "$record_path"; then
-    printf '删除前无法读取一条安全记录。\n' >&2
-    delete_errors=$((delete_errors + 1))
-    continue
-  fi
+if [ "$strict_mode" -eq 1 ]; then
+  printf '\n严格模式：删除前正在执行完整安全检查……\n'
+  predelete_errors=0
+  current_count=0
 
-  if ! snapshot_file "$record_source" || [ "$snapshot_stat" != "$record_source_stat" ] || \
-      [ "$snapshot_hash" != "$record_source_hash" ]; then
-    printf '无法删除原图，因为 HEIC 已发生变化：%s\n' "$record_source" >&2
-    delete_errors=$((delete_errors + 1))
-    continue
-  fi
-  current_output_hash=$(sha256_file "$record_output")
-  if [ -z "$current_output_hash" ] || [ "$current_output_hash" != "$record_output_hash" ]; then
-    printf '无法删除原图，因为 JPG 已发生变化：%s\n' "$record_output" >&2
-    delete_errors=$((delete_errors + 1))
-    continue
-  fi
-
-  if rm -f "$record_source" && [ ! -e "$record_source" ]; then
-    deleted=$((deleted + 1))
+  if ! scan_selected_roots eligible "$final_scan" "$final_seen_dir"; then
+    printf '安全检查失败：一个或多个文件夹的最终扫描不完整。\n' >&2
+    predelete_errors=$((predelete_errors + 1))
   else
-    printf '无法删除原图：%s\n' "$record_source" >&2
-    delete_errors=$((delete_errors + 1))
+    while IFS= read -r -d '' current_heic; do
+      current_count=$((current_count + 1))
+      current_key=$(path_key "$current_heic")
+      if [ -z "$current_key" ] || [ ! -f "$initial_seen_dir/$current_key" ]; then
+        printf '安全检查失败：发现非预期的 HEIC 文件：%s\n' "$current_heic" >&2
+        predelete_errors=$((predelete_errors + 1))
+      fi
+    done < "$final_scan"
   fi
-done
+
+  if [ "$current_count" -ne "$found" ]; then
+    printf '安全检查失败：人工检查期间 HEIC 文件集合发生变化。\n' >&2
+    predelete_errors=$((predelete_errors + 1))
+  fi
+
+  for record_path in "$records_dir"/*; do
+    if ! load_record "$record_path"; then
+      printf '安全检查失败：有一条安全记录无法读取。\n' >&2
+      predelete_errors=$((predelete_errors + 1))
+      continue
+    fi
+
+    if ! snapshot_file "$record_source" || [ "$snapshot_stat" != "$record_source_stat" ] || \
+        [ "$snapshot_hash" != "$record_source_hash" ]; then
+      printf '安全检查失败：源 HEIC 已发生变化：%s\n' "$record_source" >&2
+      predelete_errors=$((predelete_errors + 1))
+    fi
+
+    current_output_hash=$(sha256_file "$record_output")
+    if [ -z "$current_output_hash" ] || [ "$current_output_hash" != "$record_output_hash" ]; then
+      printf '安全检查失败：生成的 JPG 已发生变化：%s\n' "$record_output" >&2
+      predelete_errors=$((predelete_errors + 1))
+    elif ! validate_jpeg "$record_output"; then
+      printf '安全检查失败：生成的 JPG 已无法通过验证：%s\n' "$record_output" >&2
+      predelete_errors=$((predelete_errors + 1))
+    fi
+  done
+
+  if [ "$predelete_errors" -gt 0 ]; then
+    printf '安全停止：%d 项最终检查失败，没有删除任何 HEIC。\n' \
+      "$predelete_errors" >&2
+    exit 1
+  fi
+
+  for record_path in "$records_dir"/*; do
+    if ! load_record "$record_path"; then
+      printf '删除前无法读取一条安全记录。\n' >&2
+      delete_errors=$((delete_errors + 1))
+      continue
+    fi
+
+    if ! snapshot_file "$record_source" || [ "$snapshot_stat" != "$record_source_stat" ] || \
+        [ "$snapshot_hash" != "$record_source_hash" ]; then
+      printf '无法删除原图，因为 HEIC 已发生变化：%s\n' "$record_source" >&2
+      delete_errors=$((delete_errors + 1))
+      continue
+    fi
+    current_output_hash=$(sha256_file "$record_output")
+    if [ -z "$current_output_hash" ] || [ "$current_output_hash" != "$record_output_hash" ]; then
+      printf '无法删除原图，因为 JPG 已发生变化：%s\n' "$record_output" >&2
+      delete_errors=$((delete_errors + 1))
+      continue
+    fi
+
+    if rm -f "$record_source" && [ ! -e "$record_source" ]; then
+      deleted=$((deleted + 1))
+    else
+      printf '无法删除原图：%s\n' "$record_source" >&2
+      delete_errors=$((delete_errors + 1))
+    fi
+  done
+else
+  printf '\n轻量模式：逐张检查同名 JPG 是否仍为非空普通文件，然后删除对应 HEIC……\n'
+  for record_path in "$records_dir"/*; do
+    if ! load_record "$record_path"; then
+      printf '删除前无法读取一条记录。\n' >&2
+      delete_errors=$((delete_errors + 1))
+      continue
+    fi
+
+    if [ -L "$record_output" ] || [ ! -f "$record_output" ] || [ ! -s "$record_output" ]; then
+      printf '已保留原图：同名 JPG 不存在或不是非空普通文件：%s\n' \
+        "$record_output" >&2
+      delete_errors=$((delete_errors + 1))
+      continue
+    fi
+
+    if rm -f "$record_source" && [ ! -e "$record_source" ]; then
+      deleted=$((deleted + 1))
+    else
+      printf '无法删除原图：%s\n' "$record_source" >&2
+      delete_errors=$((delete_errors + 1))
+    fi
+  done
+fi
 
 printf '\n完成：已验证 %d 个 JPG，已删除 %d 个 HEIC 原图，保留 %d 个问题原图，删除错误 %d 个。\n' \
   "$ready" "$deleted" "$failed" "$delete_errors"

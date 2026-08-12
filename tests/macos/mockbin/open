@@ -17,6 +17,24 @@ case "${HEIC2JPG_TEST_OPEN_ACTION:-none}" in
       break
     done < <(find "$root" -type f -name '*.jpg' -print0)
     ;;
+  remove_jpg)
+    while IFS= read -r -d '' file; do
+      rm -f "$file"
+      break
+    done < <(find "$root" -type f -name '*.jpg' -print0)
+    ;;
+  empty_jpg)
+    while IFS= read -r -d '' file; do
+      : > "$file"
+      break
+    done < <(find "$root" -type f -name '*.jpg' -print0)
+    ;;
+  jpg_becomes_directory)
+    while IFS= read -r -d '' file; do
+      rm -f "$file" && mkdir "$file"
+      break
+    done < <(find "$root" -type f -name '*.jpg' -print0)
+    ;;
   add_heic)
     while IFS= read -r -d '' file; do
       cp "$file" "$root/added-during-review.HEIC"
