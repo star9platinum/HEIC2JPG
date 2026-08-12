@@ -32,6 +32,8 @@ receipt_output_hash=''
 receipt_version_attribute='io.github.star9platinum.heic2jpg.receipt-version'
 receipt_source_attribute='io.github.star9platinum.heic2jpg.source-sha256'
 receipt_output_attribute='io.github.star9platinum.heic2jpg.output-sha256'
+temp_marker_name='.HEIC2JPG-TEMP-MARKER'
+temp_marker_magic='HEIC2JPG_TEMP_V1'
 
 usage() {
   cat <<'EOF'
@@ -49,6 +51,19 @@ usage() {
 EOF
 }
 
+mark_temp_dir() {
+  local directory=$1
+  local kind=$2
+
+  if ! printf '%s\n%s\n%s\n%s\n' \
+      "$temp_marker_magic" "$kind" "$$" "$(date +%s)" \
+      > "$directory/$temp_marker_name"; then
+    rm -rf "$directory" 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
 discard_conversion_temp() {
   if [ -n "$conversion_temporary" ]; then
     rm -f "$conversion_temporary" 2>/dev/null || true
@@ -56,7 +71,7 @@ discard_conversion_temp() {
   fi
   if [ -n "$conversion_temp_dir" ]; then
     case "${conversion_temp_dir##*/}" in
-      .HEIC2JPG.*)
+      .HEIC2JPG.convert.*|.HEIC2JPG.*)
         rm -rf "$conversion_temp_dir" 2>/dev/null || true
         ;;
     esac
@@ -85,7 +100,7 @@ cleanup() {
 
   if [ -n "$state_dir" ] && [ -d "$state_dir" ]; then
     case "$state_dir" in
-      "$temp_parent"/HEIC2JPG.*)
+      "$temp_parent"/HEIC2JPG.state.*|"$temp_parent"/HEIC2JPG.*)
         rm -rf "$state_dir" 2>/dev/null || true
         ;;
     esac
@@ -329,6 +344,11 @@ validate_jpeg() {
     validation_temp_dir=''
     return 1
   fi
+  if ! mark_temp_dir "$validation_temp_dir" validation; then
+    printf '验证详情：无法标记验证临时文件夹：%s\n' "$jpeg_path" >&2
+    validation_temp_dir=''
+    return 1
+  fi
   validation_temporary="$validation_temp_dir/validation.jpg"
   : > "$decode_log"
   sips -s format jpeg "$jpeg_path" --out "$validation_temporary" > "$decode_log" 2>&1
@@ -507,7 +527,7 @@ while [ "$requested_index" -lt "$requested_count" ]; do
   requested_index=$((requested_index + 1))
 done
 
-for required_command in sips shasum stat find awk grep open mktemp; do
+for required_command in sips shasum stat find awk grep open mktemp date; do
   if ! command -v "$required_command" >/dev/null 2>&1; then
     printf '错误：找不到必需的 macOS 命令：%s\n' "$required_command" >&2
     exit 1
@@ -518,8 +538,13 @@ if [ "$strict_mode" -eq 1 ] && ! command -v xattr >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! state_dir=$(mktemp -d "$temp_parent/HEIC2JPG.XXXXXX"); then
+if ! state_dir=$(mktemp -d "$temp_parent/HEIC2JPG.state.XXXXXX"); then
   printf '错误：无法创建私有安全工作区。\n' >&2
+  exit 1
+fi
+if ! mark_temp_dir "$state_dir" state; then
+  state_dir=''
+  printf '错误：无法标记私有安全工作区。\n' >&2
   exit 1
 fi
 
@@ -765,8 +790,14 @@ while IFS= read -r -d '' input; do
     continue
   fi
 
-  if ! conversion_temp_dir=$(mktemp -d "$output_dir/.HEIC2JPG.XXXXXX"); then
+  if ! conversion_temp_dir=$(mktemp -d "$output_dir/.HEIC2JPG.convert.XXXXXX"); then
     printf '失败，已保留原图：无法在照片旁创建临时文件夹：%s\n' "$input" >&2
+    failed=$((failed + 1))
+    continue
+  fi
+  if ! mark_temp_dir "$conversion_temp_dir" conversion; then
+    printf '失败，已保留原图：无法标记照片旁的临时文件夹：%s\n' "$input" >&2
+    conversion_temp_dir=''
     failed=$((failed + 1))
     continue
   fi
@@ -837,8 +868,7 @@ while IFS= read -r -d '' input; do
     continue
   fi
   conversion_temporary=''
-  rm -rf "$conversion_temp_dir" 2>/dev/null || true
-  conversion_temp_dir=''
+  discard_conversion_temp
 
   output_hash=''
   if [ "$strict_mode" -eq 1 ]; then

@@ -55,6 +55,11 @@ assert_no_photo_temp() {
   if [ -z "$found_temp" ]; then pass "$2"; else fail "$2 ($found_temp)"; fi
 }
 
+assert_no_state_temp() {
+  found_temp=$(find "$1" -type d -name 'HEIC2JPG.state.*' -print -quit)
+  if [ -z "$found_temp" ]; then pass "$2"; else fail "$2 ($found_temp)"; fi
+}
+
 hash_file() {
   PATH="$mockbin:$real_path" shasum -a 256 < "$1" | awk '{print $1}'
 }
@@ -65,8 +70,9 @@ new_case() {
   call_log="$case_root/calls.log"
   output_log="$case_root/output.log"
   xattr_store="$case_root/xattrs"
+  runtime_temp="$case_root/runtime-temp"
   : > "$call_log"
-  mkdir -p "$xattr_store"
+  mkdir -p "$xattr_store" "$runtime_temp"
 }
 
 run_core() {
@@ -80,6 +86,7 @@ run_core() {
 
   printf '%s\n' "$confirmation" | env \
     PATH="$mockbin:$real_path" \
+    TMPDIR="$runtime_temp/" \
     HEIC2JPG_TEST_MODE=1 \
     HEIC2JPG_TEST_CALL_LOG="$call_log" \
     HEIC2JPG_TEST_XATTR_STORE="$xattr_store" \
@@ -107,6 +114,7 @@ if grep -q '^content-sha256:' "$call_log"; then fail 'default lightweight mode p
 sips_count=$(grep -c '^sips$' "$call_log")
 if [ "$sips_count" -eq 6 ]; then pass 'default mode decodes each newly generated JPG only once'; else fail "default mode decodes each newly generated JPG only once (sips calls $sips_count)"; fi
 assert_no_photo_temp "$case_root/photos" 'success leaves no photo temporary files'
+assert_no_state_temp "$runtime_temp" 'success leaves no system state temporary directory'
 
 new_case 'hidden HEIC files are skipped'
 mkdir -p "$case_root/photos"

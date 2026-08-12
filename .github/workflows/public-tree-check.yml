@@ -52,5 +52,20 @@ jobs:
             return ""
           end try
           APPLESCRIPT
+          /usr/bin/osacompile -o "$work/cleaner-picker.scpt" <<'APPLESCRIPT'
+          use scripting additions
+          try
+            set selectedFolders to choose folder with prompt "选择一个或多个需要清理的照片根目录（取消则只检查系统临时目录）" with multiple selections allowed
+            set outputLines to ""
+            repeat with selectedFolder in selectedFolders
+              set outputLines to outputLines & (POSIX path of selectedFolder) & linefeed
+            end repeat
+            return outputLines
+          on error number -128
+            return ""
+          end try
+          APPLESCRIPT
       - name: Test folder selection and deletion safety flow
         run: bash tests/macos/run-tests.sh
+      - name: Test temporary-file cleanup flow
+        run: bash tests/macos/run-cleaner-tests.sh
