@@ -64,7 +64,10 @@ new_case() {
   mkdir -p "$case_root"
   call_log="$case_root/calls.log"
   output_log="$case_root/output.log"
+  xattr_store="$case_root/xattrs"
+  resume_answer=N
   : > "$call_log"
+  mkdir -p "$xattr_store"
 }
 
 run_core() {
@@ -76,10 +79,24 @@ run_core() {
   mutate_match=${6:-__never_match__}
   shift 6
 
-  printf '%s\n' "$confirmation" | env \
+  has_force=0
+  for run_argument in "$@"; do
+    if [ "$run_argument" = '-f' ]; then
+      has_force=1
+    fi
+  done
+
+  if [ "$has_force" -eq 1 ]; then
+    answers=$(printf '%s\n' "$confirmation")
+  else
+    answers=$(printf '%s\n%s\n' "$resume_answer" "$confirmation")
+  fi
+
+  printf '%s\n' "$answers" | env \
     PATH="$mockbin:$real_path" \
     HEIC2JPG_TEST_MODE=1 \
     HEIC2JPG_TEST_CALL_LOG="$call_log" \
+    HEIC2JPG_TEST_XATTR_STORE="$xattr_store" \
     HEIC2JPG_TEST_PHOTO_ROOT="$target" \
     HEIC2JPG_TEST_OPEN_ACTION="$action" \
     HEIC2JPG_SIPS_FAIL_MATCH="$fail_match" \
@@ -115,8 +132,8 @@ assert_exists "$case_root/photos/.HEIC" 'dot-only HEIC is kept unchanged'
 assert_exists "$case_root/photos/._IMG_0001.HEIC" 'AppleDouble-style HEIC is kept unchanged'
 assert_missing "$case_root/photos/.jpg" 'dot-only HEIC produces no JPG'
 assert_missing "$case_root/photos/._IMG_0001.jpg" 'AppleDouble-style HEIC produces no JPG'
-assert_log_contains 'Skipped 2 hidden HEIC file(s)' 'hidden HEIC skip count is reported'
-assert_log_contains 'Skip hidden HEIC (kept unchanged)' 'hidden HEIC paths are reported'
+assert_log_contains '已跳过 2 个隐藏 HEIC 文件' 'hidden HEIC skip count is reported'
+assert_log_contains '跳过隐藏 HEIC（保持不变）' 'hidden HEIC paths are reported'
 
 new_case 'cancel confirmation'
 mkdir -p "$case_root/photos"
@@ -137,8 +154,8 @@ assert_exists "$case_root/photos/good.jpg" 'good HEIC is converted despite anoth
 assert_exists "$case_root/photos/fail.HEIC" 'corrupt HEIC is kept'
 assert_missing "$case_root/photos/fail.jpg" 'corrupt HEIC produces no published JPG'
 if grep -q '^open$' "$call_log"; then pass 'partial success reaches review phase'; else fail 'partial success reaches review phase'; fi
-assert_log_contains 'sips could not convert' 'conversion failure reports a specific conversion error'
-assert_log_contains '(exit 1)' 'conversion failure reports sips exit status'
+assert_log_contains 'sips 无法转换' 'conversion failure reports a specific conversion error'
+assert_log_contains '退出码 1' 'conversion failure reports sips exit status'
 assert_log_contains 'mock decoder rejected the input' 'conversion failure preserves original sips diagnostic'
 assert_log_contains 'fail.HEIC' 'conversion failure identifies the source file'
 assert_no_photo_temp "$case_root/photos" 'conversion failure cleans photo temporary files'
@@ -187,15 +204,33 @@ assert_missing "$case_root/photos/review.HEIC" 'control case deletes confirmed H
 new_case 'resume matching existing target'
 mkdir -p "$case_root/photos"
 printf 'source\n' > "$case_root/photos/existing.HEIC"
-printf 'MOCK_JPEG\nexisting output\n' > "$case_root/photos/existing.jpg"
-touch -r "$case_root/photos/existing.HEIC" "$case_root/photos/existing.jpg"
+run_core 'n' "$case_root/photos" none __never_match__ __never_match__ __never_match__ -f
+assert_status 0 'cancelled deletion leaves a fingerprinted JPG for resume'
+assert_exists "$case_root/photos/existing.HEIC" 'cancelled first run keeps the HEIC'
 old_jpg_hash=$(hash_file "$case_root/photos/existing.jpg")
 run_core 'y' "$case_root/photos" none __never_match__ __never_match__ __never_match__
-assert_status 0 'matching valid existing JPG resumes safely without -f'
+assert_status 0 'matching source and JPG fingerprints resume safely without -f'
 assert_missing "$case_root/photos/existing.HEIC" 'resumed HEIC is deleted after review confirmation'
 new_jpg_hash=$(hash_file "$case_root/photos/existing.jpg")
 if [ "$old_jpg_hash" = "$new_jpg_hash" ]; then pass 'resume preserves existing JPG bytes'; else fail 'resume preserves existing JPG bytes'; fi
-assert_log_contains 'Resume ready: existing JPG passed validation' 'resume decision is reported'
+assert_log_contains '断点续传成功：来源和 JPG 的 SHA-256 指纹一致' 'strict resume decision is reported'
+
+new_case 'decode-only compatibility resume'
+mkdir -p "$case_root/photos"
+printf 'source that was not used for this jpeg\n' > "$case_root/photos/compat.HEIC"
+printf 'MOCK_JPEG\nunrelated but decodable output\n' > "$case_root/photos/compat.jpg"
+resume_answer=Y
+run_core 'y' "$case_root/photos" none __never_match__ __never_match__ __never_match__
+assert_status 0 'explicit Y enables decode-only compatibility resume'
+assert_missing "$case_root/photos/compat.HEIC" 'compatibility resume reaches deletion only after final confirmation'
+assert_exists "$case_root/photos/compat.jpg" 'compatibility resume preserves the decodable JPG'
+assert_log_contains '已启用宽松续传' 'compatibility mode risk is reported'
+assert_log_contains '未核验它是否由旁边的 HEIC 转换而来' 'compatibility resume reports skipped provenance check'
+if find "$xattr_store" -type f -print -quit | grep -q .; then
+  fail 'compatibility resume must not backfill persistent fingerprints'
+else
+  pass 'compatibility resume does not backfill persistent fingerprints'
+fi
 
 new_case 'invalid existing target is skipped'
 mkdir -p "$case_root/photos"
@@ -204,6 +239,7 @@ printf 'NOT_A_JPEG\n' > "$case_root/photos/unverified.jpg"
 touch -r "$case_root/photos/unverified.HEIC" "$case_root/photos/unverified.jpg"
 printf 'good\n' > "$case_root/photos/good.HEIC"
 old_jpg_hash=$(hash_file "$case_root/photos/unverified.jpg")
+resume_answer=Y
 run_core 'Y' "$case_root/photos" none __never_match__ __never_match__ __never_match__
 assert_status 0 'invalid existing JPG does not stop other conversions'
 assert_exists "$case_root/photos/unverified.HEIC" 'HEIC with invalid existing JPG is kept'
@@ -211,9 +247,9 @@ new_jpg_hash=$(hash_file "$case_root/photos/unverified.jpg")
 if [ "$old_jpg_hash" = "$new_jpg_hash" ]; then pass 'invalid existing JPG is preserved'; else fail 'invalid existing JPG is preserved'; fi
 assert_missing "$case_root/photos/good.HEIC" 'other successful HEIC is deleted after confirmation'
 assert_exists "$case_root/photos/good.jpg" 'other HEIC converts despite invalid existing JPG'
-assert_log_contains 'existing JPG validation failed' 'invalid existing JPG reason is reported'
+assert_log_contains '已有 JPG 验证失败' 'invalid existing JPG reason is reported'
 
-new_case 'mismatched existing target is skipped'
+new_case 'existing target without receipt is skipped by default'
 mkdir -p "$case_root/photos"
 printf 'source\n' > "$case_root/photos/mismatch.HEIC"
 printf 'MOCK_JPEG\nunrelated output\n' > "$case_root/photos/mismatch.jpg"
@@ -221,11 +257,12 @@ touch -t 202001010101 "$case_root/photos/mismatch.HEIC"
 touch -t 202101010101 "$case_root/photos/mismatch.jpg"
 printf 'good\n' > "$case_root/photos/good.HEIC"
 run_core 'y' "$case_root/photos" none __never_match__ __never_match__ __never_match__
-assert_status 0 'timestamp-mismatched JPG does not stop other conversions'
+assert_status 0 'unfingerprinted JPG does not stop other conversions'
 assert_exists "$case_root/photos/mismatch.HEIC" 'HEIC with unverified existing JPG is kept'
-assert_exists "$case_root/photos/mismatch.jpg" 'timestamp-mismatched JPG is preserved'
+assert_exists "$case_root/photos/mismatch.jpg" 'unfingerprinted JPG is preserved'
 assert_missing "$case_root/photos/good.HEIC" 'verified file still completes in mismatch batch'
-assert_log_contains 'timestamp does not match the HEIC' 'timestamp mismatch reason is reported'
+assert_log_contains '没有本脚本写入的断点续传指纹' 'missing fingerprint reason is reported'
+assert_log_contains '默认严格续传' 'strict fingerprint mode is the default'
 
 new_case 'folder picker'
 mkdir -p "$case_root/photos"
@@ -234,6 +271,7 @@ printf 'KEEP\n' | env \
   PATH="$mockbin:$real_path" \
   HEIC2JPG_TEST_MODE=1 \
   HEIC2JPG_TEST_CALL_LOG="$call_log" \
+  HEIC2JPG_TEST_XATTR_STORE="$xattr_store" \
   HEIC2JPG_PICKER_PATH="$case_root/photos" \
   HEIC2JPG_TEST_OPEN_ACTION=none \
   bash "$converter" -f > "$output_log" 2>&1
@@ -252,6 +290,7 @@ printf 'Y\n' | env \
   PATH="$mockbin:$real_path" \
   HEIC2JPG_TEST_MODE=1 \
   HEIC2JPG_TEST_CALL_LOG="$call_log" \
+  HEIC2JPG_TEST_XATTR_STORE="$xattr_store" \
   HEIC2JPG_PICKER_PATHS="$picker_paths" \
   HEIC2JPG_TEST_OPEN_ACTION=none \
   bash "$converter" -f > "$output_log" 2>&1
@@ -272,6 +311,7 @@ printf 'y\n' | env \
   PATH="$mockbin:$real_path" \
   HEIC2JPG_TEST_MODE=1 \
   HEIC2JPG_TEST_CALL_LOG="$call_log" \
+  HEIC2JPG_TEST_XATTR_STORE="$xattr_store" \
   HEIC2JPG_TEST_OPEN_ACTION=none \
   bash "$converter" -f "$case_root/photos" "$case_root/photos/sub folder" \
     "$case_root/other photos" > "$output_log" 2>&1
@@ -281,7 +321,7 @@ assert_missing "$case_root/photos/sub folder/nested.HEIC" 'overlapping folder so
 assert_exists "$case_root/photos/sub folder/nested.jpg" 'overlapping folder source is converted once'
 assert_missing "$case_root/other photos/other.HEIC" 'additional command-line folder source is deleted'
 assert_exists "$case_root/other photos/other.jpg" 'additional command-line folder is converted'
-assert_log_contains '2 eligible, 2 newly converted' 'overlapping selections are deduplicated'
+assert_log_contains '共 2 个可处理文件，新转换 2 个' 'overlapping selections are deduplicated'
 
 new_case 'folder picker cancel'
 printf 'unused\n' | env \
@@ -297,10 +337,11 @@ if grep -Eq '^(sips|open)$' "$call_log"; then fail 'picker cancellation performs
 new_case 'single-file one click'
 mkdir -p "$case_root/photos"
 printf 'wrapper\n' > "$case_root/photos/wrapper.HEIC"
-printf 'Y\n' | env \
+printf 'N\nY\n' | env \
   PATH="$mockbin:$real_path" \
   HEIC2JPG_TEST_MODE=1 \
   HEIC2JPG_TEST_CALL_LOG="$call_log" \
+  HEIC2JPG_TEST_XATTR_STORE="$xattr_store" \
   HEIC2JPG_PICKER_PATH="$case_root/photos" \
   HEIC2JPG_TEST_OPEN_ACTION=none \
   bash "$one_click" > "$output_log" 2>&1

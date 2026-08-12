@@ -1,0 +1,51 @@
+#!/bin/bash
+
+set -u
+
+store=${HEIC2JPG_TEST_XATTR_STORE:-}
+if [ -z "$store" ]; then
+  printf 'mock xattr: HEIC2JPG_TEST_XATTR_STORE is not set\n' >&2
+  exit 1
+fi
+
+attribute_file() {
+  local attribute=$1
+  local target_path=$2
+  local target_key
+  local attribute_key
+
+  target_key=${target_path//\//_}
+  target_key=${target_key// /_}
+  target_key=${target_key//:/_}
+  case "$attribute" in
+    *.receipt-version) attribute_key=version ;;
+    *.source-sha256) attribute_key=source ;;
+    *.output-sha256) attribute_key=output ;;
+    *) return 1 ;;
+  esac
+  printf '%s/%s-%s' "$store" "$target_key" "$attribute_key"
+}
+
+case "${1:-}" in
+  -p)
+    [ "$#" -eq 3 ] || exit 2
+    record=$(attribute_file "$2" "$3") || exit 1
+    [ -f "$record" ] || exit 1
+    command cat "$record"
+    ;;
+  -w)
+    [ "$#" -eq 4 ] || exit 2
+    record=$(attribute_file "$2" "$4") || exit 1
+    mkdir -p "$store" || exit 1
+    printf '%s' "$3" > "$record"
+    ;;
+  -d)
+    [ "$#" -eq 3 ] || exit 2
+    record=$(attribute_file "$2" "$3") || exit 1
+    rm -f "$record"
+    ;;
+  *)
+    printf 'mock xattr: unsupported arguments\n' >&2
+    exit 2
+    ;;
+esac
